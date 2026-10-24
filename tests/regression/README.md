@@ -36,7 +36,7 @@ change of the algorithm, review the differences and rewrite the baselines with
 | `leo-triplet-cut` | 20 × 200 × 160 px, in the repository, with WCS | (21996) 1999 XP31 at S/N ≈ 15, checked against its MPChecker position; two edge artefacts on the left border must be rejected |
 | `ceres-cut` | 11 × 256 × 256 px, in the repository | null case: real noise around saturated, nearly static Ceres; nothing may pass |
 | `mariekebaan-full` | 82 × 695 × 519 px, external | the same asteroid among moving blank borders and a warm pixel (edge and detector tests) |
-| `leo-triplet-full` | 20 × 2328 × 1760 px, external | the same asteroid in the full field; plate solution transferred from the solved stack (about 6 min on 2 cores) |
+| `leo-triplet-full` | 20 × 2328 × 1760 px, external | the same asteroid in the full field, and (4456) Mawson at S/N 8.4 (found once the 0.8 calibration screened artefacts out); plate solution transferred from the solved stack (about 6 min on 2 cores) |
 | `ceres-full` | 11 × 1391 × 1039 px, external | null case on the full field |
 
 The fixtures in `data/` are 16-bit crops of the full sets (about 6 MB together);

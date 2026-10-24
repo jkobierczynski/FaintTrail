@@ -16,15 +16,35 @@
 
 namespace fainttrail {
 
+namespace {
+std::vector<std::pair<std::string, BackendFactory>>& registry() {
+    static std::vector<std::pair<std::string, BackendFactory>> r;
+    return r;
+}
+}  // namespace
+
+void register_backend(const std::string& name, BackendFactory factory) {
+    if (name.empty() || name == "auto" || name == "cpu") throw std::runtime_error("reserved backend name '" + name + "'");
+    for (auto& e : registry())
+        if (e.first == name) {
+            e.second = std::move(factory);
+            return;
+        }
+    registry().emplace_back(name, std::move(factory));
+}
+
 std::vector<std::string> backend_names() {
     std::vector<std::string> names;
     // GPU backends will be listed here first, when compiled in and a device is present.
     names.push_back("cpu");
+    for (const auto& e : registry()) names.push_back(e.first);
     return names;
 }
 
 std::unique_ptr<SearchBackend> make_backend(const std::string& name) {
     if (name.empty() || name == "auto" || name == "cpu") return std::make_unique<detail::CpuBackend>();
+    for (const auto& e : registry())
+        if (e.first == name) return e.second();
     std::string known;
     for (const auto& n : backend_names()) known += (known.empty() ? "" : ", ") + n;
     throw std::runtime_error("unknown or unavailable search backend '" + name + "' (available: " + known + ", auto)");

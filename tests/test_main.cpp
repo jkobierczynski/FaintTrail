@@ -448,7 +448,7 @@ static void test_backend_contract() {
             if (v >= 0) { v = (v + 1) % static_cast<int>(vel.size()); break; }
         CHECK(!check_backend(pass, ref, bad2).ok);
     }
-    CHECK(!backend_names().empty() && backend_names().back() == "cpu");
+    CHECK(!backend_names().empty() && backend_names().front() == "cpu");
     bool threw = false;
     try { make_backend("no-such-backend"); } catch (const std::runtime_error&) { threw = true; }
     CHECK(threw);

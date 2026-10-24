@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.8.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
+> Status: **0.8.1, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -192,12 +192,13 @@ The detection threshold is calibrated with time-shuffled null searches. Since 0.
 artefacts are screened out of the null runs and a curved Gaussian-field tail is
 fitted ([docs/CALIBRATION.md](docs/CALIBRATION.md)): the requested false-alarm rate
 is now delivered instead of a data-dependent fraction of it, the threshold is
-lower (Leo Triplet: S/N 11.2 → 7.1), and a second, still unidentified candidate
-appeared in the Leo Triplet field.
+lower (Leo Triplet: S/N 11.2 → 7.1), and a second asteroid appeared in the Leo
+Triplet field: (4456) Mawson at V 19.5, confirmed with MPChecker.
 
 Real data are covered by a regression suite ([tests/regression](tests/regression/README.md)):
-two asteroids identified in the author's captures, (12631) Mariekebaan and
-(21996) 1999 XP31, both checked against their catalogue/ephemeris sky positions, and a null field
+three asteroids identified in the author's captures, (12631) Mariekebaan,
+(21996) 1999 XP31 and (4456) Mawson, checked against their catalogue/ephemeris sky
+positions, and a null field
 around Ceres. Small 16-bit crops run with every `ctest`; the full frames run
 when `FAINTTRAIL_REGRESSION_DATA` is set.
 
@@ -210,6 +211,19 @@ fainttrail regress tests/regression [--backend NAME] [--strict]
 * CUDA backend behind the same search interface, with the CPU path as reference
 * curved motion for fast near-Earth objects
 * more real-data cases (fainter and faster objects), then integration with AstroFind and Siril
+
+## Kernel features
+
+[docs/KERNEL_FEATURES.md](docs/KERNEL_FEATURES.md) compares whole-pixel and sub-pixel
+shifts, measures what straight-line stacking loses on curved tracks, and tests
+per-frame weights, all at equal false-alarm rates. Whole-pixel shifts stay; the
+kernel will accept an optional shift table for curved tracks; weights stay out of
+the kernel.
+
+## Development
+
+Design decisions, their reasons and the open questions are recorded in
+[DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Licence
 

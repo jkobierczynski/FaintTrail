@@ -94,17 +94,20 @@ candidates gave the same threshold (Leo: 7.11 against 7.10) at many times the co
 
 | case | threshold 0.7 | threshold 0.8 | passing candidates |
 |---|---:|---:|---|
-| Leo Triplet, full field | 11.15 | **7.10** | 1999 XP31 (S/N 15.5) and **a new candidate, S/N 8.4** |
+| Leo Triplet, full field | 11.15 | **7.10** | 1999 XP31 (S/N 15.5) and **(4456) Mawson (S/N 8.4)** |
 | Leo Triplet crop | 11.18 | 6.40 | 1999 XP31 |
 | Mariekebaan, full | 7.44 | 7.02 | Mariekebaan |
 | Mariekebaan crop | 8.11 | 7.60 | Mariekebaan |
 | Ceres field, full | 6.90 | 6.86 | none |
 | Ceres crop | 6.81 | 6.42 | none |
 
-The new Leo candidate: 11h19m33.5s +13°19′21″ at 2016-11-30 03:52:23 UTC, 26″/h at
-position angle 113°, halves S/N 6.1 and 5.8, about 0.6 mag fainter than 1999 XP31.
-It is 26′ from 1999 XP31, outside the 15′ MPChecker query made for that object, and
-not yet identified.
+The new Leo candidate (11h19m33.5s +13°19′21″ at 2016-11-30 03:52:23 UTC, 26″/h at
+position angle 113°, halves S/N 6.1 and 5.8, about 0.6 mag fainter than 1999 XP31)
+lies 26′ from 1999 XP31, outside the 15′ MPChecker query made for that object. A new
+query identified it as **(4456) Mawson**: MPChecker gives 11h19m35.0s +13°19′14″ at
+2016-11-30.20 UT, V 19.5, motion +25″/h, −10″/h; the candidate's track at that time
+is 2.4″ away (geocentric against topocentric) and moves at +24″/h, −10″/h. With the
+0.7 calibration this main-belt asteroid was below the threshold.
 
 ## Finding 3: subsets do not make the calibration cheaper
 

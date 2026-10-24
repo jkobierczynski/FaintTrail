@@ -35,6 +35,7 @@
 // are within that tolerance of each other. check_backend() tests exactly this.
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -73,8 +74,15 @@ public:
     virtual StackResult run(const StackPass& pass, const ProgressFn& progress = {}) = 0;
 };
 
-// Names of the backends compiled into this build, best first.
+// Names of the backends compiled into this build, best first, followed by the
+// registered ones.
 std::vector<std::string> backend_names();
+
+// Register an additional backend under `name` (experimental kernels, studies,
+// out-of-tree GPU backends). "auto" never selects a registered backend. A
+// registered backend that does not satisfy the contract will fail check-backend.
+using BackendFactory = std::function<std::unique_ptr<SearchBackend>()>;
+void register_backend(const std::string& name, BackendFactory factory);
 
 // Create a backend by name; "auto" (or "") picks the best available one.
 // Throws std::runtime_error for unknown or unavailable backends.

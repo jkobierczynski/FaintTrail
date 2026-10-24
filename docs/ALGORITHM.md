@@ -97,8 +97,14 @@ motions using bilinear interpolation, followed by parabolic interpolation. Then:
   (at the fastest searched motion, the object may be faster), **slow** (moves less
   than two PSF widths during the sequence).
 
+* **edge**: the track runs close to the blank border of registered frames in more
+  than a tenth of the frames.
+* **detector**: with registration offsets (`REGDX`/`REGDY`) known, a position fixed
+  on the sensor explains the signal about as well as the moving track (warm pixels
+  carried along by the registration).
+
 A candidate passes (`ok`) when it is above the threshold and has none of the
-rejecting flags (half, single, ghost).
+rejecting flags (half, single, ghost, edge, detector).
 
 ## 5. Uncertainties
 

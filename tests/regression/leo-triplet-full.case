@@ -30,17 +30,18 @@ dec     = 13.750278
 sky_tol = 5.0
 
 # Found in 0.8 once the threshold calibration stopped counting artefacts
-# (single-frame defects, field edges) as noise
-# (threshold 11.2 -> 7.1). Not yet identified: an MPChecker query for this
-# position and time is pending. Until then it is listed here so the case checks
-# that it keeps being found; rename and cite the source once it is identified.
-[object candidate 2016-11-30 A (unidentified)]
-source  = FaintTrail 0.8 detection, S/N 8.4, halves 6.1 / 5.8; 11 19 33.5 +13 19 21 at 03:52:23 UTC; awaiting identification
-mjd     = 57722.16137731
-x       = 1089.04
-y       = 760.44
+# (single-frame defects, field edges) as noise (threshold 11.2 -> 7.1), and then
+# identified with MPChecker as (4456) Mawson.
+[object (4456) Mawson]
+source  = MPChecker (geocentric) position 11 19 35.0 +13 19 14 at 2016-11-30.20 UT, V 19.5, motion 25+ 10-
+mjd     = 57722.20
+x       = 1094.99
+y       = 773.31
 vx      = 6.42
 vy      = 13.88
 pos_tol = 1.0
 vel_tol = 2.0
 min_snr = 7.5
+ra      = 169.895833
+dec     = 13.320556
+sky_tol = 5.0

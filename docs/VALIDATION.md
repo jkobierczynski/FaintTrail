@@ -142,8 +142,10 @@ of the null runs, curved tail fit; see [CALIBRATION.md](CALIBRATION.md)) the
 threshold for this field fell from S/N 11.0 to 7.1. 1999 XP31 is still found, and a
 second candidate passes: S/N 8.4 at 11h19m33.5s +13°19′21″ (2016-11-30 03:52:23
 UTC), 26″/h at position angle 113°, consistent in both halves of the sequence
-(6.1 / 5.8). It lies outside the 15′ MPChecker query made for 1999 XP31 and is not
-yet identified.
+(6.1 / 5.8). MPChecker identifies it as **(4456) Mawson** (V 19.5): the predicted
+position at 2016-11-30.20 UT, 11h19m35.0s +13°19′14″, is 2.4″ from the candidate's
+track, and the motion agrees (+25/−10″/h against +24/−10″/h). It was below the old
+threshold of 11.0.
 
 A third real set (Ceres field, 2014-05-16, 11 frames over 5.3 min) is too short
 for synthetic tracking: nothing in it moves two PSF widths. It gave no false
