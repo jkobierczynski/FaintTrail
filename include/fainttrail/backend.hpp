@@ -40,6 +40,7 @@
 #include <utility>
 #include <vector>
 
+#include "fainttrail/search.hpp"
 #include "fainttrail/types.hpp"
 
 namespace fainttrail {
@@ -55,6 +56,9 @@ struct StackPass {
 struct StackResult {
     Image max_snr;
     std::vector<int> best_v;
+    // Optional breakdown of the pass, for profiling. Backends report what they can
+    // (the CPU backend: accumulate / coverage+max per thread, averaged; merge).
+    std::vector<StageTime> timings;
 };
 
 class SearchBackend {

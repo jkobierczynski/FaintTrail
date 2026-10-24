@@ -38,7 +38,7 @@ commands
   crop FRAMES... -o DIR --x0 X --y0 Y --w W --h H [--bitpix 16] [--wcs-from F]
                             cut the same rectangle out of every frame
   regress CASES...          run real-data regression cases (.case files or dirs)
-          [--backend NAME] [--strict] [--write-baseline] [--report FILE.csv]
+          [--backend NAME] [--strict] [--write-baseline] [--report FILE.csv] [--profile]
   check-backend [--backend NAME]
                             verify a backend against the stacking contract
   version                   print the version
@@ -52,6 +52,7 @@ motion range (search, completeness)
 search options
   -o FILE                   candidates CSV (default candidates.csv)
   --tracklets FILE          per-frame positions of the passing candidates
+  --profile                 time per pipeline stage and stacking throughput
   --threshold S             fixed S/N threshold (default: calibrate)
   --null-runs N             time-shuffled null searches for calibration (3)
   --false-per-run F         accepted noise detections per search (0.02)
@@ -110,7 +111,7 @@ struct Args {
     int integer(const std::string& k, int d) const { return static_cast<int>(std::lround(num(k, d))); }
 };
 
-const std::vector<std::string> kFlags = {"--all", "--quiet", "--help", "-h", "--strict", "--write-baseline"};
+const std::vector<std::string> kFlags = {"--all", "--quiet", "--help", "-h", "--strict", "--write-baseline", "--profile"};
 
 Args parse(int argc, char** argv, int start) {
     Args a;
@@ -305,7 +306,9 @@ int cmd_simulate(const Args& a) {
 }
 
 int cmd_search(const Args& a) {
+    const auto t_load = std::chrono::steady_clock::now();
     const auto frames = load_inputs(a);
+    const double load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count();
     const SearchParams p = search_params(a, frames);
     const ProgressFn prog = make_progress(a.flag("--quiet"));
     ProgressFn prep_prog, search_prog;
@@ -328,6 +331,7 @@ int cmd_search(const Args& a) {
         write_frame(a.str("--snr-map"), f, h);
     }
     std::printf("%s", summary_text(res, !a.flag("--all")).c_str());
+    if (a.flag("--profile")) std::printf("\n%s", profile_text(prep, res, load_s).c_str());
     std::printf("\nwrote %s\n", out.c_str());
     return 0;
 }
@@ -510,6 +514,7 @@ int cmd_regress(const Args& a) {
                     o.nframes, o.width, o.height, o.result.backend.c_str(), o.result.n_velocities,
                     o.result.threshold_snr, passed, o.result.candidates.size());
         std::printf("   time: load %.1f s, prepare %.1f s, search %.1f s\n", o.load_s, o.prepare_s, o.search_s);
+        if (a.flag("--profile")) std::printf("%s", o.profile.c_str());
         for (const auto& ch : o.checks)
             std::printf("   %-7s %s\n", ch.ok ? "ok" : (ch.hard || opt.strict ? "FAIL" : "changed"), ch.text.c_str());
         if (write_base && !c.baseline_path.empty()) {

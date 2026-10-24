@@ -257,6 +257,7 @@ RegressionOutcome run_regression_case(const RegressionCase& c, const RegressionO
     t0 = std::chrono::steady_clock::now();
     out.result = search(prep, p, sp);
     out.search_s = seconds_since(t0);
+    out.profile = profile_text(prep, out.result, out.load_s);
     const SearchResult& r = out.result;
 
     // ---- known objects

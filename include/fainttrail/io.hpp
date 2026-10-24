@@ -29,4 +29,8 @@ void write_completeness_csv(const std::string& path, const CompletenessReport& r
 // Human-readable summary of a search.
 std::string summary_text(const SearchResult& res, bool ok_only = false);
 
+// Time per pipeline stage, summed over repeats (the null runs), with the share of
+// the total and the stacking throughput. Pass load_s > 0 to include frame loading.
+std::string profile_text(const Prepared& prep, const SearchResult& res, double load_s = 0.0);
+
 }  // namespace fainttrail

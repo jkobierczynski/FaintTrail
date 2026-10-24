@@ -88,6 +88,7 @@ struct RegressionOutcome {
     std::size_t nframes = 0;
     int width = 0, height = 0;
     double load_s = 0.0, prepare_s = 0.0, search_s = 0.0;
+    std::string profile;  // profile_text() of the run
 };
 
 struct RegressionOptions {

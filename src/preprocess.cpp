@@ -146,6 +146,7 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
         if (progress && !progress(f, stage)) throw Cancelled();
     };
     const int nt = detail::thread_count(params.threads);
+    Stopwatch sw(&p.timings);
 
     // static sky = per-pixel median over time. For the residual of frame i the
     // median excludes the frames closest in time to i, so an object that moves
@@ -223,6 +224,7 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
         }
     }
 
+    sw.lap("static sky + residuals");
     // per-frame residual noise
     report(0.3, "residuals");
     p.sigma.assign(static_cast<std::size_t>(n), 1.0);
@@ -242,6 +244,7 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
         if (!(p.fwhm_px > 0.0)) p.fwhm_px = 3.0;  // sensible default when no stars are found
     }
 
+    sw.lap("noise + PSF");
     // temporal scatter map -> weights and mask
     report(0.45, "mask");
     Image scatter(w, h);
@@ -273,6 +276,7 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
                     if (p.mask.inside(x + dx, y + dy)) p.mask.at(x + dx, y + dy) = 0.0f;
         }
 
+    sw.lap("scatter mask");
     // normalise, weight, reject cosmic rays, clip, matched filter, renormalise
     report(0.55, "matched filter");
     const double psf_sigma = p.fwhm_px * kFwhmToSigma;
@@ -335,6 +339,7 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
             cancel = true;
     }
     if (cancel) throw Cancelled();
+    sw.lap("matched filter");
 }
 
 Prepared with_times(const Prepared& base, const std::vector<double>& t_h, const SearchParams& params) {
@@ -399,6 +404,7 @@ Prepared prepare(const std::vector<Frame>& frames, const SearchParams& params,
     }
 
     // per-frame background level
+    detail::Stopwatch sw(&p.timings);
     p.background.resize(static_cast<std::size_t>(n));
     p.sub.resize(static_cast<std::size_t>(n));
 #pragma omp parallel for num_threads(nt) schedule(dynamic)
@@ -431,6 +437,7 @@ Prepared prepare(const std::vector<Frame>& frames, const SearchParams& params,
         }
         p.sub[static_cast<std::size_t>(i)] = std::move(im);
     }
+    sw.lap("background + borders");
     detail::build_stage(p.sub, p, params, progress, true);
     if (progress && !progress(1.0, "prepared")) throw Cancelled();
     return p;

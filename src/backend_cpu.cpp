@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -48,6 +49,8 @@ StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {
     std::vector<std::vector<int>> larg(static_cast<std::size_t>(nt));
     std::atomic<int> done{0};
     std::atomic<bool> cancel{false};
+    std::vector<double> t_acc(static_cast<std::size_t>(nt), 0.0), t_max(static_cast<std::size_t>(nt), 0.0);
+    using clk = std::chrono::steady_clock;
 
 #pragma omp parallel num_threads(nt)
     {
@@ -65,6 +68,7 @@ StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {
             if (cancel.load(std::memory_order_relaxed)) continue;
             const double vx = grid[static_cast<std::size_t>(vi)].first;
             const double vy = grid[static_cast<std::size_t>(vi)].second;
+            const auto ta = clk::now();
             std::fill(stack.begin(), stack.end(), 0.0f);
             std::fill(diff.begin(), diff.end(), 0);
             for (int i = 0; i < n; ++i) {  // ascending frame order, as the contract requires
@@ -84,6 +88,7 @@ StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {
                     for (int x = x0; x < x1; ++x) o[x] += s[x];
                 }
             }
+            const auto tb = clk::now();
             std::fill(colacc.begin(), colacc.end(), 0);
             for (int y = 0; y < h; ++y) {
                 int running = 0;
@@ -103,6 +108,9 @@ StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {
                     }
                 }
             }
+            const auto tc = clk::now();
+            t_acc[static_cast<std::size_t>(tid)] += std::chrono::duration<double>(tb - ta).count();
+            t_max[static_cast<std::size_t>(tid)] += std::chrono::duration<double>(tc - tb).count();
             const int d = ++done;
             if (tid == 0 && progress && (d % 8 == 0 || d == nv)) {
                 if (!progress(static_cast<double>(d) / nv, "stack")) cancel = true;
@@ -111,6 +119,7 @@ StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {
     }
     if (cancel) throw Cancelled();
 
+    const auto tm = clk::now();
     StackResult out;
     out.max_snr = Image(w, h, neg);
     out.best_v.assign(static_cast<std::size_t>(w) * h, -1);
@@ -128,6 +137,14 @@ StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {
     }
     for (auto& v : out.max_snr.data)
         if (!std::isfinite(v)) v = 0.0f;
+    double sa = 0.0, sm = 0.0;
+    for (int k = 0; k < nt; ++k) {
+        sa += t_acc[static_cast<std::size_t>(k)];
+        sm += t_max[static_cast<std::size_t>(k)];
+    }
+    out.timings.push_back({"accumulate", sa / nt});
+    out.timings.push_back({"coverage + max", sm / nt});
+    out.timings.push_back({"thread merge", std::chrono::duration<double>(clk::now() - tm).count()});
     if (progress) progress(1.0, "stack");
     return out;
 }

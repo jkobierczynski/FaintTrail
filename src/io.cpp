@@ -213,4 +213,57 @@ std::string summary_text(const SearchResult& res, bool ok_only) {
     return s.str();
 }
 
+std::string profile_text(const Prepared& prep, const SearchResult& res, double load_s) {
+    struct Row {
+        std::string name;
+        double s = 0.0;
+        int n = 0;
+        bool sub = false;
+    };
+    std::vector<Row> rows;
+    auto add = [&](const std::string& prefix, const StageTime& t) {
+        const bool sub = t.name.rfind("  ", 0) == 0;
+        const std::string name = sub ? "    " + t.name.substr(2) : prefix + t.name;
+        for (auto& r : rows)
+            if (r.name == name) {
+                r.s += t.seconds;
+                ++r.n;
+                return;
+            }
+        rows.push_back({name, t.seconds, 1, sub});
+    };
+    if (load_s > 0.0) add("", {"load frames", load_s});
+    for (const auto& t : prep.timings) add("prepare: ", t);
+    for (const auto& t : res.timings) add("search:  ", t);
+    double total = 0.0, stack = 0.0;
+    int passes = 0;
+    for (const auto& r : rows) {
+        if (r.sub) continue;
+        total += r.s;
+        if (r.name.find("stack (") != std::string::npos) {
+            stack += r.s;
+            passes += r.n;
+        }
+    }
+    std::ostringstream o;
+    o << std::fixed;
+    o << "profile (wall clock; null-run stages summed over " << std::max(0, passes - 1) << " runs)\n";
+    for (const auto& r : rows) {
+        o << "  " << std::left << std::setw(34) << r.name << std::right << std::setw(9) << std::setprecision(2) << r.s
+          << " s";
+        if (!r.sub) o << std::setw(7) << std::setprecision(1) << (total > 0 ? 100.0 * r.s / total : 0.0) << " %";
+        if (r.n > 1) o << "   (" << r.n << "x)";
+        o << "\n";
+    }
+    o << "  " << std::left << std::setw(34) << "total" << std::right << std::setw(9) << std::setprecision(2) << total
+      << " s\n";
+    if (stack > 0.0 && passes > 0) {
+        const double adds = static_cast<double>(res.n_velocities) * prep.nframes * prep.width * prep.height * passes;
+        o << "stacking: " << passes << " passes x " << res.n_velocities << " motions x " << prep.nframes << " frames x "
+          << prep.width << "x" << prep.height << " px = " << std::setprecision(3) << adds / 1e12
+          << " T pixel-adds, " << std::setprecision(2) << adds / stack / 1e9 << " G/s\n";
+    }
+    return o.str();
+}
+
 }  // namespace fainttrail

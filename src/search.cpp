@@ -397,6 +397,8 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     res.backend_description = backend->description();
     res.dv_pxh = dv;
     const int nt = detail::thread_count(params.threads);
+    detail::Stopwatch sw(&res.timings);
+    sw.lap("setup");
 
     const bool auto_thr = params.threshold_snr <= 0.0;
     const int runs = auto_thr ? std::max(0, params.null_runs) : 0;
@@ -406,9 +408,12 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
 
     // the real search
     PassOutput real = run_pass(*backend, p, grid, p.t_h, params, progress, 0.0, share, "search");
+    sw.lap("stack (real)");
+    for (const auto& st : real.timings) res.timings.push_back({"  " + st.name, st.seconds});
     const float floor = static_cast<float>(auto_thr ? params.min_snr_floor : params.threshold_snr);
     std::vector<Peak> peaks = find_peaks(real, floor, nms, edge, 100000);
     res.max_snr = std::move(real.max_snr);
+    sw.lap("peaks (real)");
 
     // threshold
     if (!auto_thr) {
@@ -428,8 +433,12 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
             const std::string stage = "null " + std::to_string(k + 1) + "/" + std::to_string(runs);
             if (progress && !progress(share * (k + 1), stage)) throw Cancelled();
             const Prepared q = detail::with_times(p, t, params);
+            sw.lap("null rebuild");
             PassOutput null = run_pass(*backend, q, grid, t, params, progress, share * (k + 1), share * (k + 2), stage);
+            sw.lap("stack (null)");
+            for (const auto& st : null.timings) res.timings.push_back({"  " + st.name, st.seconds});
             for (const auto& pk : find_peaks(null, 3.0f, nms, edge, 20000)) pooled.push_back(pk.snr);
+            sw.lap("peaks (null)");
         }
         res.null_peaks.assign(pooled.begin(), pooled.end());
         double a = 0, b = 0;
@@ -458,6 +467,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
         res.null_b = 0.0;
     }
 
+    sw.lap("threshold fit");
     // keep peaks above threshold
     std::vector<Peak> keep;
     for (const auto& pk : peaks)
@@ -478,6 +488,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
             cancel = true;
     }
     if (cancel) throw Cancelled();
+    sw.lap("refine");
 
     // duplicates and ghosts: a weaker candidate whose track coincides with a
     // stronger one is either the same object (most frames) or a sidelobe of it
@@ -531,6 +542,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     });
     for (std::size_t i = 0; i < res.candidates.size(); ++i) res.candidates[i].id = static_cast<int>(i + 1);
 
+    sw.lap("ghosts + flags");
     if (progress) progress(1.0, "done");
     res.elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return res;

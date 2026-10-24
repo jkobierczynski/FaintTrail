@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fainttrail VERSION 0.3.0 LANGUAGES C CXX
+project(fainttrail VERSION 0.4.0 LANGUAGES C CXX
         DESCRIPTION "Synthetic tracking engine for faint asteroid and comet detection")
 
 set(CMAKE_CXX_STANDARD 17)
@@ -105,6 +105,11 @@ endif()
 if(FAINTTRAIL_BUILD_TOOLS)
   add_executable(fainttrail_benchmark tools/benchmark.cpp)
   target_link_libraries(fainttrail_benchmark PRIVATE fainttrail)
+  add_executable(fainttrail_kernel_bench tools/kernel_bench.cpp)
+  target_link_libraries(fainttrail_kernel_bench PRIVATE fainttrail)
+  if(OpenMP_CXX_FOUND)
+    target_link_libraries(fainttrail_kernel_bench PRIVATE OpenMP::OpenMP_CXX)
+  endif()
 endif()
 
 # ---------------------------------------------------------------- install

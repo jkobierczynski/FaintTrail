@@ -62,6 +62,12 @@ struct SearchParams {
 
 // Preprocessed, noise-normalised data; reusable for several searches,
 // cutouts and the GUI.
+// Wall-clock time of one pipeline stage (for profiling; see `--profile`).
+struct StageTime {
+    std::string name;
+    double seconds = 0.0;
+};
+
 struct Prepared {
     int width = 0, height = 0, nframes = 0;
     double t_ref_mjd = 0.0;             // reference epoch (middle of the sequence)
@@ -79,6 +85,7 @@ struct Prepared {
     Wcs wcs;
     std::vector<double> exptime_s;
     std::vector<double> reg_dx, reg_dy; // registration offsets, empty if unknown
+    std::vector<StageTime> timings;     // preprocessing stages, in order
 };
 
 struct Candidate {
@@ -125,6 +132,7 @@ struct SearchResult {
     std::string backend;                // backend that ran the stacking passes
     std::string backend_description;
     double elapsed_s = 0.0;
+    std::vector<StageTime> timings;     // search stages, in order (null runs include their rebuild)
     Image max_snr;                      // max over all velocities, per pixel
 };
 

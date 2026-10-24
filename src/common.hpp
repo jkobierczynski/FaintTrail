@@ -5,9 +5,12 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <string>
 #include <vector>
 
+#include "fainttrail/search.hpp"
 #include "fainttrail/types.hpp"
 
 #ifdef FAINTTRAIL_HAVE_OPENMP
@@ -15,6 +18,21 @@
 #endif
 
 namespace fainttrail::detail {
+
+// Records the wall-clock time between successive lap() calls.
+class Stopwatch {
+public:
+    explicit Stopwatch(std::vector<StageTime>* out) : out_(out), t_(std::chrono::steady_clock::now()) {}
+    void lap(const std::string& name) {
+        const auto now = std::chrono::steady_clock::now();
+        if (out_) out_->push_back({name, std::chrono::duration<double>(now - t_).count()});
+        t_ = now;
+    }
+
+private:
+    std::vector<StageTime>* out_;
+    std::chrono::steady_clock::time_point t_;
+};
 
 inline int thread_count(int requested) {
 #ifdef FAINTTRAIL_HAVE_OPENMP
