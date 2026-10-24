@@ -1,0 +1,4 @@
+target_false_per_run,runs,passing_candidates,observed_per_run,threshold_mean
+0.02,40,0,0,7.0206
+0.2,40,10,0.25,6.41672
+1,40,56,1.4,5.99464

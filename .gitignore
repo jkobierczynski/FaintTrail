@@ -1,0 +1,12 @@
+build/
+build-*/
+cmake-build-*/
+*.fits
+*.fit
+!tests/data/*.fits
+candidates.csv
+tracklets.csv
+completeness.csv
+.vscode/
+.idea/
+*.user
