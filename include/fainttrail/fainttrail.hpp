@@ -7,6 +7,7 @@
 
 #include "fainttrail/astrometry.hpp"
 #include "fainttrail/regression.hpp"
+#include "fainttrail/tiled.hpp"
 #include "fainttrail/backend.hpp"
 #include "fainttrail/fits.hpp"
 #include "fainttrail/io.hpp"

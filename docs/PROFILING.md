@@ -195,6 +195,41 @@ copies remain. The unbinned Leo sequence (4656 × 3520) would now need about
 4.6 GB instead of 8.3 GB. Going below 3 copies needs spatial tiling (part 3 of
 step 4).
 
+## After step 4: spatial tiling (0.7.0)
+
+Item 3, part 2: `search_tiled()` searches the field in square tiles, reading the
+frames from the FITS files one rectangle at a time (see ALGORITHM.md, section 6).
+Whole-frame quantities are measured first from the same sample positions, every
+tile carries the halos it needs, and the detection maps are assembled before the
+peaks are found, so **the candidate lists are byte-identical to the untiled
+search**. This is checked by a unit test (several tile sizes, from memory and
+from FITS files, with blank borders and registration offsets), by the three
+fixtures run again as tiled searches in `ctest`, and on the full data below.
+
+| case | untiled | tiled | result |
+|---|---|---|---|
+| Leo Triplet, `--max-memory 500` → 2 × 2 tiles of 1280 px | 1148 MB, 188 s | **381 MB**, 284 s | identical |
+| Leo Triplet, `--tile 512` → 5 × 4 tiles | 1148 MB, 188 s | **209 MB**, 311 s | identical |
+| Mariekebaan, `--tile 256` → 3 × 3 tiles | 365 MB, 35 s | **177 MB**, 112 s | identical |
+
+Where the extra time goes in the 2 × 2 run of the Leo Triplet (256 s in the profiled
+run against 188 s untiled):
+
+| stage | untiled | tiled |
+|---|---:|---:|
+| preprocessing, all four time orders | 27 s | 70 s (noise pass 6 s, normalisation pass 32 s, tile preparation 32 s) |
+| stacking | 147–160 s | 172 s (the stack halo adds about 7 % of area here) |
+
+Tiling costs most where preprocessing dominates: Mariekebaan has 82 frames, and
+its leave-out median (O(n²) per pixel) is computed about twice per time order and
+over the halos too. Item 4 (a faster leave-out median) would remove most of that
+difference. With smaller tiles the halos grow relative to the cores, so the
+command-line tool picks the largest tile that fits the memory budget and does not
+tile at all when the whole sequence fits.
+
+The unbinned Leo sequence (4656 × 3520, about 4.6 GB untiled) can now be searched
+within any budget down to a few hundred MB.
+
 ## Reproducing
 
 ```sh

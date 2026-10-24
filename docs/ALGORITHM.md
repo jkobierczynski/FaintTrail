@@ -98,12 +98,44 @@ matched-filter centroid. The motion uncertainty follows from the time sampling:
 `pos_err / rms(t)`. The benchmark (`tools/benchmark.cpp`) checks these against the
 actual errors on simulated data.
 
-## 6. Known limitations
+## 6. Tiled search (`search_tiled`)
+
+For sequences that do not fit in memory the field is cut into square tiles and
+searched tile by tile, with frames read from the FITS files a rectangle at a time
+(`FrameSource`). The result is identical to the untiled search, bit for bit:
+
+* Every tile is prepared and stacked with a halo: the longest shift of any trial
+  motion over the sequence (the *stack halo*), plus the reach of the matched
+  filter, the cosmic-ray test and the mask dilation (the *filter halo*), plus the
+  3 px growth of blank borders. Within the core of a tile nothing then depends on
+  pixels outside the tile, and the coverage count sees the true image edges.
+* Quantities that belong to a whole frame are measured on the whole frame first,
+  from exactly the sample positions the untiled search uses: the background level,
+  the residual noise (residuals are computed only at the sample positions), the PSF
+  width (from the static sky of the whole field) and the matched-filter
+  normalisation (one extra filtering pass over the tiles).
+* The detection maps of the tile cores are assembled into whole-field maps before
+  peaks are found, so peaks on tile boundaries are found once.
+* Each null run uses the same time permutation as the untiled search and goes
+  through the same three passes.
+* Candidates are refined on a tile around them with a refinement halo that covers
+  the refined track, the photometry and edge boxes and the detector hypothesis
+  (which follows the registration offsets).
+
+The price is the extra preprocessing (about twice the untiled amount) and the
+stacking of the halos. The tile size is chosen from a memory budget
+(`TileOptions::max_memory_mb`) or given directly; the command-line tool tiles
+automatically when the untiled search would need more than 60 % of the RAM.
+
+## 7. Known limitations
 
 * Motion is linear. Fast near-Earth objects observed over long sequences curve;
   splitting the sequence or adding a curvature term is planned.
 * Objects that move less than about two PSF widths during the sequence are partly
   absorbed into the static sky. Longer sequences help.
-* Memory: the prepared data hold three float copies of the sequence
-  (background-subtracted, residual, filtered). Tiling is planned for large sensors.
+* Memory: the untiled search holds about three float copies of the sequence at its
+  peak. Larger sequences are searched in tiles (section 6), which costs time.
+* Long sequences (many frames) spend much time in the leave-out median of the
+  static sky, which costs O(n²) per pixel; in a tiled search it is computed about
+  twice.
 * The frames must already be calibrated and registered. FaintTrail does not align.

@@ -56,15 +56,8 @@ std::vector<std::pair<double, double>> velocity_grid(const Prepared& p, const Se
     return grid;
 }
 
-namespace {
+namespace detail {
 
-struct Peak {
-    int x = 0, y = 0;
-    float snr = 0.0f;
-    int vidx = -1;
-};
-
-using PassOutput = StackResult;
 
 // One stacking pass through the selected backend; the backend's own progress
 // (0..1) is mapped onto [f0, f1] of the caller's progress.
@@ -117,14 +110,10 @@ std::vector<Peak> find_peaks(const PassOutput& pass, float floor, int radius, in
 // Upper-tail probability of a standard normal.
 double gauss_q(double z) { return 0.5 * std::erfc(z / std::sqrt(2.0)); }
 
-struct TrackEval {
-    double snr = 0.0;
-    int count = 0;
-};
 
 // S/N along a sub-pixel track. which: 0 all, 1 first half (t<0), 2 second half.
 TrackEval track_snr(const Prepared& p, double x, double y, double vx, double vy, int which,
-                    std::vector<double>* per_frame = nullptr) {
+                    std::vector<double>* per_frame) {
     double sum = 0.0;
     int count = 0;
     if (per_frame) per_frame->assign(static_cast<std::size_t>(p.nframes), NAN);
@@ -384,9 +373,132 @@ bool fit_null_tail(std::vector<float> pooled, int runs, double& a, double& b) {
     return true;
 }
 
-}  // namespace
+}  // namespace detail
+
+namespace detail {
+
+std::vector<std::vector<double>> null_time_orders(const std::vector<double>& t_h, int runs, std::uint64_t seed) {
+    detail::Rng rng(seed);
+    std::vector<std::vector<double>> out;
+    for (int k = 0; k < runs; ++k) {
+        std::vector<double> t = t_h;
+        for (std::size_t i = t.size() - 1; i > 0; --i) {
+            const std::size_t j = static_cast<std::size_t>(rng.uniform() * (i + 1));
+            std::swap(t[i], t[j]);
+        }
+        out.push_back(std::move(t));
+    }
+    return out;
+}
+
+void set_threshold(const Prepared& p, const SearchParams& params, std::size_t n_velocities, int runs,
+                   const std::vector<float>& pooled, SearchResult& res) {
+    if (params.threshold_snr > 0.0) {
+        res.threshold_snr = params.threshold_snr;
+        res.threshold_method = "fixed";
+    } else if (runs > 0) {
+        res.null_peaks.assign(pooled.begin(), pooled.end());
+        double a = 0, b = 0;
+        if (fit_null_tail(pooled, runs, a, b)) {
+            res.null_a = a;
+            res.null_b = b;
+            res.threshold_snr = (a - std::log(std::max(1e-6, params.target_false_per_run))) / b;
+            res.threshold_method = "null-fit";
+        } else {
+            const float mx = pooled.empty() ? 0.0f : *std::max_element(pooled.begin(), pooled.end());
+            res.threshold_snr = mx + 0.5;
+            res.threshold_method = "null-quantile";
+        }
+        res.threshold_snr = std::max(res.threshold_snr, params.min_snr_floor);
+    } else {
+        // Gaussian approximation: independent trials ~ resolution elements x velocities.
+        const double resel = 4.0 * kPi * std::pow(p.fwhm_px * kFwhmToSigma, 2);
+        const double trials = std::max(1.0, p.width * p.height / resel * n_velocities * 0.5);
+        double lo = 3.0, hi = 12.0;
+        for (int it = 0; it < 60; ++it) {
+            const double mid = 0.5 * (lo + hi);
+            if (trials * gauss_q(mid) > params.target_false_per_run) lo = mid; else hi = mid;
+        }
+        res.threshold_snr = std::max(hi, params.min_snr_floor);
+        res.threshold_method = "gaussian";
+        res.null_b = 0.0;
+    }
+}
+
+std::vector<Peak> select_peaks(const std::vector<Peak>& peaks, double threshold, const SearchParams& params) {
+    std::vector<Peak> keep;
+    for (const auto& pk : peaks)
+        if (pk.snr >= threshold && pk.vidx >= 0) keep.push_back(pk);
+    if (static_cast<int>(keep.size()) > params.max_candidates) keep.resize(static_cast<std::size_t>(params.max_candidates));
+    return keep;
+}
+
+// Duplicates and ghosts: a weaker candidate whose track coincides with a stronger
+// one is either the same object (most frames) or a sidelobe of it (a large share
+// of its signal comes from frames where the tracks overlap). Then final flags,
+// false-alarm rates, sky coordinates and ids. `meta` needs only the frame times,
+// FWHM and WCS; `contrib` holds each candidate's per-frame track values.
+void finish_candidates(const Prepared& meta, std::vector<RefinedCandidate> rc, SearchResult& res) {
+    std::sort(rc.begin(), rc.end(), [](const RefinedCandidate& a, const RefinedCandidate& b) { return a.c.snr > b.c.snr; });
+    const Prepared& p = meta;
+    const double r_overlap = 1.5 * p.fwhm_px;
+    std::vector<bool> drop(rc.size(), false);
+    for (std::size_t j = 0; j < rc.size(); ++j) {
+        double total = 0.0;
+        for (double v : rc[j].contrib)
+            if (std::isfinite(v) && v > 0.0) total += v;
+        std::vector<bool> shared(static_cast<std::size_t>(p.nframes), false);
+        int overlap_max = 0;
+        for (std::size_t i = 0; i < j && !drop[j]; ++i) {
+            if (drop[i]) continue;
+            int overlap = 0;
+            for (int f = 0; f < p.nframes; ++f) {
+                const double t = p.t_h[static_cast<std::size_t>(f)];
+                const double dx = (rc[i].c.x + rc[i].c.vx_pxh * t) - (rc[j].c.x + rc[j].c.vx_pxh * t);
+                const double dy = (rc[i].c.y + rc[i].c.vy_pxh * t) - (rc[j].c.y + rc[j].c.vy_pxh * t);
+                if (dx * dx + dy * dy < r_overlap * r_overlap) {
+                    ++overlap;
+                    shared[static_cast<std::size_t>(f)] = true;
+                }
+            }
+            overlap_max = std::max(overlap_max, overlap);
+            if (overlap >= p.nframes / 2) drop[j] = true;
+        }
+        if (drop[j] || overlap_max == 0) continue;
+        double from_shared = 0.0;
+        for (int f = 0; f < p.nframes; ++f) {
+            const double v = rc[j].contrib[static_cast<std::size_t>(f)];
+            if (shared[static_cast<std::size_t>(f)] && std::isfinite(v) && v > 0.0) from_shared += v;
+        }
+        if (total > 0.0 && from_shared / total > 0.3) add_flag(rc[j].c, "ghost");
+    }
+    for (std::size_t j = 0; j < rc.size(); ++j) {
+        if (drop[j]) continue;
+        Candidate c = rc[j].c;
+        finalise_flags(c);
+        c.false_alarms_per_run = res.null_b > 0.0 ? std::exp(res.null_a - res.null_b * c.snr_coarse) : 0.0;
+        sky_coordinates(p, c);
+        res.candidates.push_back(c);
+    }
+    std::stable_sort(res.candidates.begin(), res.candidates.end(), [](const Candidate& a, const Candidate& b) {
+        if (a.ok != b.ok) return a.ok;
+        return a.snr > b.snr;
+    });
+    for (std::size_t i = 0; i < res.candidates.size(); ++i) res.candidates[i].id = static_cast<int>(i + 1);
+}
+
+RefinedCandidate refine_with_contrib(const Prepared& p, const Peak& pk, const std::pair<double, double>& v0, double dv,
+                                     const SearchParams& params) {
+    RefinedCandidate r;
+    r.c = refine(p, pk, v0, dv, params);
+    track_snr(p, r.c.x, r.c.y, r.c.vx_pxh, r.c.vy_pxh, 0, &r.contrib);
+    return r;
+}
+
+}  // namespace detail
 
 SearchResult search(const Prepared& p, const SearchParams& params, const ProgressFn& progress) {
+    using namespace detail;
     const auto t0 = std::chrono::steady_clock::now();
     SearchResult res;
     res.fwhm_px = p.fwhm_px;
@@ -418,77 +530,38 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     res.max_snr = std::move(real.max_snr);
     sw.lap("peaks (real)");
 
-    // threshold
-    if (!auto_thr) {
-        res.threshold_snr = params.threshold_snr;
-        res.threshold_method = "fixed";
-    } else if (runs > 0) {
-        detail::Rng rng(params.seed);
-        std::vector<float> pooled;
-        for (int k = 0; k < runs; ++k) {
-            std::vector<double> t = p.t_h;
-            for (std::size_t i = t.size() - 1; i > 0; --i) {
-                const std::size_t j = static_cast<std::size_t>(rng.uniform() * (i + 1));
-                std::swap(t[i], t[j]);
-            }
-            // the whole time-dependent pipeline is rerun with the permuted times,
-            // so the null sees exactly the same noise structure as the real search
-            const std::string stage = "null " + std::to_string(k + 1) + "/" + std::to_string(runs);
-            if (progress && !progress(share * (k + 1), stage)) throw Cancelled();
-            detail::release_free_memory();
-            const Prepared q = detail::with_times(p, t, params);
-            sw.lap("null rebuild");
-            PassOutput null = run_pass(*backend, q, grid, t, params, progress, share * (k + 1), share * (k + 2), stage);
-            sw.lap("stack (null)");
-            for (const auto& st : null.timings) res.timings.push_back({"  " + st.name, st.seconds});
-            for (const auto& pk : find_peaks(null, 3.0f, nms, edge, 20000)) pooled.push_back(pk.snr);
-            sw.lap("peaks (null)");
-            // the previous null run's frames are released when q goes out of scope
-        }
+    // null runs: the whole time-dependent pipeline is rerun with permuted times,
+    // so the null sees exactly the same noise structure as the real search
+    std::vector<float> pooled;
+    const auto orders = null_time_orders(p.t_h, runs, params.seed);
+    for (int k = 0; k < runs; ++k) {
+        const std::vector<double>& t = orders[static_cast<std::size_t>(k)];
+        const std::string stage = "null " + std::to_string(k + 1) + "/" + std::to_string(runs);
+        if (progress && !progress(share * (k + 1), stage)) throw Cancelled();
         detail::release_free_memory();
-        res.null_peaks.assign(pooled.begin(), pooled.end());
-        double a = 0, b = 0;
-        if (fit_null_tail(pooled, runs, a, b)) {
-            res.null_a = a;
-            res.null_b = b;
-            res.threshold_snr = (a - std::log(std::max(1e-6, params.target_false_per_run))) / b;
-            res.threshold_method = "null-fit";
-        } else {
-            const float mx = pooled.empty() ? 0.0f : *std::max_element(pooled.begin(), pooled.end());
-            res.threshold_snr = mx + 0.5;
-            res.threshold_method = "null-quantile";
-        }
-        res.threshold_snr = std::max(res.threshold_snr, params.min_snr_floor);
-    } else {
-        // Gaussian approximation: independent trials ~ resolution elements x velocities.
-        const double resel = 4.0 * kPi * std::pow(p.fwhm_px * kFwhmToSigma, 2);
-        const double trials = std::max(1.0, p.width * p.height / resel * grid.size() * 0.5);
-        double lo = 3.0, hi = 12.0;
-        for (int it = 0; it < 60; ++it) {
-            const double mid = 0.5 * (lo + hi);
-            if (trials * gauss_q(mid) > params.target_false_per_run) lo = mid; else hi = mid;
-        }
-        res.threshold_snr = std::max(hi, params.min_snr_floor);
-        res.threshold_method = "gaussian";
-        res.null_b = 0.0;
+        const Prepared q = detail::with_times(p, t, params);
+        sw.lap("null rebuild");
+        PassOutput null = run_pass(*backend, q, grid, t, params, progress, share * (k + 1), share * (k + 2), stage);
+        sw.lap("stack (null)");
+        for (const auto& st : null.timings) res.timings.push_back({"  " + st.name, st.seconds});
+        for (const auto& pk : find_peaks(null, 3.0f, nms, edge, 20000)) pooled.push_back(pk.snr);
+        sw.lap("peaks (null)");
+        // the null run's frames are released when q goes out of scope
     }
-
+    detail::release_free_memory();
+    set_threshold(p, params, grid.size(), runs, pooled, res);
     sw.lap("threshold fit");
-    // keep peaks above threshold
-    std::vector<Peak> keep;
-    for (const auto& pk : peaks)
-        if (pk.snr >= res.threshold_snr && pk.vidx >= 0) keep.push_back(pk);
-    if (static_cast<int>(keep.size()) > params.max_candidates) keep.resize(static_cast<std::size_t>(params.max_candidates));
 
     // refine in parallel
-    std::vector<Candidate> cands(keep.size());
+    const std::vector<Peak> keep = select_peaks(peaks, res.threshold_snr, params);
+    std::vector<RefinedCandidate> rc(keep.size());
     std::atomic<int> done{0};
     std::atomic<bool> cancel{false};
 #pragma omp parallel for num_threads(nt) schedule(dynamic)
     for (int k = 0; k < static_cast<int>(keep.size()); ++k) {
         if (cancel) continue;
-        cands[static_cast<std::size_t>(k)] =
-            refine(p, keep[static_cast<std::size_t>(k)], grid[static_cast<std::size_t>(keep[static_cast<std::size_t>(k)].vidx)], dv, params);
+        const Peak& pk = keep[static_cast<std::size_t>(k)];
+        rc[static_cast<std::size_t>(k)] = refine_with_contrib(p, pk, grid[static_cast<std::size_t>(pk.vidx)], dv, params);
         const int d = ++done;
         if (detail::thread_id() == 0 && progress && !progress(0.9 + 0.1 * d / keep.size(), "refine"))
             cancel = true;
@@ -496,58 +569,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     if (cancel) throw Cancelled();
     sw.lap("refine");
 
-    // duplicates and ghosts: a weaker candidate whose track coincides with a
-    // stronger one is either the same object (most frames) or a sidelobe of it
-    // (a large share of its signal comes from frames where the tracks overlap).
-    std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) { return a.snr > b.snr; });
-    const double r_overlap = 1.5 * p.fwhm_px;
-    std::vector<std::vector<double>> contrib(cands.size());
-    for (std::size_t j = 0; j < cands.size(); ++j)
-        track_snr(p, cands[j].x, cands[j].y, cands[j].vx_pxh, cands[j].vy_pxh, 0, &contrib[j]);
-    std::vector<bool> drop(cands.size(), false);
-    for (std::size_t j = 0; j < cands.size(); ++j) {
-        double total = 0.0;
-        for (double v : contrib[j])
-            if (std::isfinite(v) && v > 0.0) total += v;
-        std::vector<bool> shared(static_cast<std::size_t>(p.nframes), false);
-        int overlap_max = 0;
-        for (std::size_t i = 0; i < j && !drop[j]; ++i) {
-            if (drop[i]) continue;
-            int overlap = 0;
-            for (int f = 0; f < p.nframes; ++f) {
-                const double t = p.t_h[static_cast<std::size_t>(f)];
-                const double dx = (cands[i].x + cands[i].vx_pxh * t) - (cands[j].x + cands[j].vx_pxh * t);
-                const double dy = (cands[i].y + cands[i].vy_pxh * t) - (cands[j].y + cands[j].vy_pxh * t);
-                if (dx * dx + dy * dy < r_overlap * r_overlap) {
-                    ++overlap;
-                    shared[static_cast<std::size_t>(f)] = true;
-                }
-            }
-            overlap_max = std::max(overlap_max, overlap);
-            if (overlap >= p.nframes / 2) drop[j] = true;
-        }
-        if (drop[j] || overlap_max == 0) continue;
-        double from_shared = 0.0;
-        for (int f = 0; f < p.nframes; ++f) {
-            const double v = contrib[j][static_cast<std::size_t>(f)];
-            if (shared[static_cast<std::size_t>(f)] && std::isfinite(v) && v > 0.0) from_shared += v;
-        }
-        if (total > 0.0 && from_shared / total > 0.3) add_flag(cands[j], "ghost");
-    }
-    for (std::size_t j = 0; j < cands.size(); ++j) {
-        if (drop[j]) continue;
-        Candidate c = cands[j];
-        finalise_flags(c);
-        c.false_alarms_per_run = res.null_b > 0.0 ? std::exp(res.null_a - res.null_b * c.snr_coarse) : 0.0;
-        sky_coordinates(p, c);
-        res.candidates.push_back(c);
-    }
-    std::stable_sort(res.candidates.begin(), res.candidates.end(), [](const Candidate& a, const Candidate& b) {
-        if (a.ok != b.ok) return a.ok;
-        return a.snr > b.snr;
-    });
-    for (std::size_t i = 0; i < res.candidates.size(); ++i) res.candidates[i].id = static_cast<int>(i + 1);
-
+    finish_candidates(p, std::move(rc), res);
     sw.lap("ghosts + flags");
     if (progress) progress(1.0, "done");
     res.elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

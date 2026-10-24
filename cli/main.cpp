@@ -39,6 +39,7 @@ commands
                             cut the same rectangle out of every frame
   regress CASES...          run real-data regression cases (.case files or dirs)
           [--backend NAME] [--strict] [--write-baseline] [--report FILE.csv] [--profile]
+          [--tile N]        run the cases as tiled searches (must give the same results)
   check-backend [--backend NAME]
                             verify a backend against the stacking contract
   version                   print the version
@@ -53,6 +54,10 @@ search options
   -o FILE                   candidates CSV (default candidates.csv)
   --tracklets FILE          per-frame positions of the passing candidates
   --profile                 time per pipeline stage and stacking throughput
+  --tile N                  search in tiles of N x N px (same result, less memory)
+  --max-memory MB           memory budget; tiles are used automatically when the
+                            sequence would not fit (default: 60 % of the RAM)
+  --no-tile                 never tile
   --threshold S             fixed S/N threshold (default: calibrate)
   --null-runs N             time-shuffled null searches for calibration (3)
   --false-per-run F         accepted noise detections per search (0.02)
@@ -111,7 +116,7 @@ struct Args {
     int integer(const std::string& k, int d) const { return static_cast<int>(std::lround(num(k, d))); }
 };
 
-const std::vector<std::string> kFlags = {"--all", "--quiet", "--help", "-h", "--strict", "--write-baseline", "--profile"};
+const std::vector<std::string> kFlags = {"--all", "--quiet", "--help", "-h", "--strict", "--write-baseline", "--profile", "--no-tile"};
 
 Args parse(int argc, char** argv, int start) {
     Args a;
@@ -170,18 +175,24 @@ ProgressFn make_progress(bool quiet) {
     };
 }
 
-double frame_pixscale(const std::vector<Frame>& frames, const Args& a) {
+double frame_pixscale(const std::vector<Wcs>& wcs, const Args& a) {
     if (a.flag("--pixscale")) return a.num("--pixscale", 0.0);
-    for (const auto& f : frames)
-        if (f.wcs.valid) return f.wcs.pixel_scale_arcsec();
+    for (const auto& w : wcs)
+        if (w.valid) return w.pixel_scale_arcsec();
     return 0.0;
 }
 
-SearchParams search_params(const Args& a, const std::vector<Frame>& frames) {
+std::vector<Wcs> wcs_of(const std::vector<Frame>& frames) {
+    std::vector<Wcs> v;
+    for (const auto& f : frames) v.push_back(f.wcs);
+    return v;
+}
+
+SearchParams search_params(const Args& a, const std::vector<Wcs>& wcs) {
     SearchParams p;
     const bool rates = a.flag("--rate-min") || a.flag("--rate-max");
     if (rates) {
-        const double scale = frame_pixscale(frames, a);
+        const double scale = frame_pixscale(wcs, a);
         if (scale <= 0.0) throw std::runtime_error("--rate-min/--rate-max need a WCS in the frames or --pixscale");
         p.vmin_pxh = arcsec_per_min_to_px_per_h(a.num("--rate-min", px_per_h_to_arcsec_per_min(p.vmin_pxh, scale)), scale);
         p.vmax_pxh = arcsec_per_min_to_px_per_h(a.num("--rate-max", px_per_h_to_arcsec_per_min(p.vmax_pxh, scale)), scale);
@@ -272,7 +283,7 @@ int cmd_demo(const Args& a) {
     std::fprintf(stderr, "simulating %d frames of %dx%d px with %d movers (seed %llu)...\n", sp.nframes, sp.width,
                  sp.height, sp.nmovers, static_cast<unsigned long long>(sp.seed));
     const SimResult sim = simulate(sp);
-    SearchParams p = search_params(a, sim.frames);
+    SearchParams p = search_params(a, wcs_of(sim.frames));
     if (!a.flag("--vmax") && !a.flag("--rate-max"))
         p.vmax_pxh = arcsec_per_min_to_px_per_h(sp.rate_max_arcsec_min, sp.pixscale_arcsec) * 1.1;
     const SearchResult res = search(sim.frames, p, make_progress(a.flag("--quiet")));
@@ -305,40 +316,87 @@ int cmd_simulate(const Args& a) {
     return 0;
 }
 
+void report_transfer(const TransferReport& rep, double scale) {
+    std::fprintf(stderr, "  %d stars matched, rms %.2f px, scale %.4f, rotation %.2f deg%s\n", rep.matched, rep.rms_px,
+                 rep.scale, rep.rotation_deg, rep.mirrored ? ", mirrored" : "");
+    std::fprintf(stderr, "  image scale %.3f\"/px\n", scale);
+    if (rep.source_has_distortion)
+        std::fprintf(stderr, "  note: distortion terms (SIP/PV) in the solution are ignored; positions near the\n"
+                             "        field edges can be off by up to the size of that distortion\n");
+}
+
 int cmd_search(const Args& a) {
     const auto t_load = std::chrono::steady_clock::now();
-    auto frames = load_inputs(a);
-    const double load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count();
-    const SearchParams p = search_params(a, frames);
-    const ProgressFn prog = make_progress(a.flag("--quiet"));
-    ProgressFn prep_prog, search_prog;
-    if (prog) {
-        prep_prog = [&](double f, const std::string& s) { return prog(0.1 * f, s); };
-        search_prog = [&](double f, const std::string& s) { return prog(0.1 + 0.9 * f, s); };
+    const auto files = expand_inputs(a.positional);
+    if (files.empty()) throw std::runtime_error("no input FITS files given");
+    // headers only; the pixels are read later, whole or tile by tile
+    auto src = fits_frame_source(files);
+    if (a.flag("--wcs-from")) {
+        const std::string solved = a.str("--wcs-from");
+        std::fprintf(stderr, "transferring plate solution from %s...\n", solved.c_str());
+        const auto rep = apply_wcs_from_file(solved, *src, a.num("--wcs-scale", 0.0));
+        report_transfer(rep, src->info(0).wcs.pixel_scale_arcsec());
     }
-    const Prepared prep = prepare(std::move(frames), p, prep_prog);  // hands over the pixel buffers
-    const SearchResult res = search(prep, p, search_prog);
+    std::vector<Wcs> wcs;
+    for (int i = 0; i < src->count(); ++i) wcs.push_back(src->info(i).wcs);
+    const SearchParams p = search_params(a, wcs);
+    const ProgressFn prog = make_progress(a.flag("--quiet"));
+
+    // tile when asked to, or when the whole sequence would not fit the memory budget
+    const double physical = physical_memory_mb();
+    const double budget = a.flag("--max-memory") ? a.num("--max-memory", 0.0) : (physical > 0 ? 0.6 * physical : 4096.0);
+    const double untiled = estimate_untiled_memory_mb(src->width(), src->height(), src->count());
+    const bool tiled = !a.flag("--no-tile") && (a.flag("--tile") || untiled > budget);
+
+    Prepared meta;
+    SearchResult res;
+    double load_s = 0.0;
+    if (tiled) {
+        TileOptions to;
+        to.tile = a.integer("--tile", 0);
+        to.max_memory_mb = budget;
+        const TilePlan plan = plan_tiles(*src, p, to);
+        std::fprintf(stderr,
+                     "tiled search: %d x %d tiles of %d px (halo %d + %d px), estimated memory %.0f MB "
+                     "(untiled about %.0f MB, budget %.0f MB)\n",
+                     plan.tiles_x, plan.tiles_y, plan.tile, plan.stack_halo, plan.filter_halo, plan.memory_mb, untiled,
+                     budget);
+        load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count();
+        res = search_tiled(*src, p, to, &meta, prog);
+    } else {
+        std::fprintf(stderr, "loading %zu frames...\n", files.size());
+        auto frames = load_frames(files);
+        for (int i = 0; i < src->count(); ++i) frames[static_cast<std::size_t>(i)].wcs = src->info(i).wcs;
+        load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count();
+        ProgressFn prep_prog, search_prog;
+        if (prog) {
+            prep_prog = [&](double f, const std::string& s) { return prog(0.1 * f, s); };
+            search_prog = [&](double f, const std::string& s) { return prog(0.1 + 0.9 * f, s); };
+        }
+        meta = prepare(std::move(frames), p, prep_prog);  // hands over the pixel buffers
+        res = search(meta, p, search_prog);
+    }
     const std::string out = a.str("-o", "candidates.csv");
     write_candidates_csv(out, res);
-    if (a.flag("--tracklets")) write_tracklets_csv(a.str("--tracklets"), prep, res, true);
+    if (a.flag("--tracklets")) write_tracklets_csv(a.str("--tracklets"), meta, res, true);
     if (a.flag("--snr-map")) {
         FitsHeader h;
         h.set("BUNIT", std::string("sigma"), "max S/N over all trial motions");
         Frame f;
         f.image = res.max_snr;
         f.mjd_mid = res.t_ref_mjd;
-        f.wcs = prep.wcs;
+        f.wcs = meta.wcs;
         write_frame(a.str("--snr-map"), f, h);
     }
     std::printf("%s", summary_text(res, !a.flag("--all")).c_str());
-    if (a.flag("--profile")) std::printf("\n%s", profile_text(prep, res, load_s).c_str());
+    if (a.flag("--profile")) std::printf("\n%s", profile_text(meta, res, load_s).c_str());
     std::printf("\nwrote %s\n", out.c_str());
     return 0;
 }
 
 int cmd_stack(const Args& a) {
     auto frames = load_inputs(a);
-    SearchParams p = search_params(a, frames);
+    SearchParams p = search_params(a, wcs_of(frames));
     p.keep_residuals = true;  // stack_full works on the residuals
     const Prepared prep = prepare(std::move(frames), p);
     double vx = a.num("--vx", NAN), vy = a.num("--vy", NAN);
@@ -373,7 +431,7 @@ int cmd_stack(const Args& a) {
 
 int cmd_completeness(const Args& a) {
     const auto frames = load_inputs(a);
-    const SearchParams p = search_params(a, frames);
+    const SearchParams p = search_params(a, wcs_of(frames));
     CompletenessParams cp;
     if (a.flag("--levels")) {
         cp.snr_levels.clear();
@@ -491,6 +549,7 @@ int cmd_regress(const Args& a) {
     opt.backend = a.str("--backend");
     opt.threads = a.integer("--threads", 0);
     opt.strict = a.flag("--strict");
+    opt.tile = a.integer("--tile", 0);
     const bool write_base = a.flag("--write-baseline");
     std::FILE* report = nullptr;
     if (a.flag("--report")) {
@@ -510,8 +569,9 @@ int cmd_regress(const Args& a) {
         }
         int passed = 0;
         for (const auto& cd : o.result.candidates) passed += cd.ok;
-        std::printf("   %zu frames %dx%d, backend %s, %zu motions, threshold %.2f, %d passed / %zu candidates\n",
-                    o.nframes, o.width, o.height, o.result.backend.c_str(), o.result.n_velocities,
+        std::printf("   %zu frames %dx%d%s, backend %s, %zu motions, threshold %.2f, %d passed / %zu candidates\n",
+                    o.nframes, o.width, o.height, o.tiles > 0 ? (", tiles of " + std::to_string(o.tiles) + " px").c_str() : "",
+                    o.result.backend.c_str(), o.result.n_velocities,
                     o.result.threshold_snr, passed, o.result.candidates.size());
         std::printf("   time: load %.1f s, prepare %.1f s, search %.1f s; memory %.0f MB\n", o.load_s, o.prepare_s,
                     o.search_s, o.memory_mb);

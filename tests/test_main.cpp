@@ -589,6 +589,67 @@ static void test_memory_layout() {
     CHECK(!r1.timings.empty() && r1.timings.front().rss_mb >= 0.0);
 }
 
+// Tiled search: the same result as the untiled search, bit for bit, for tile
+// sizes that do or do not divide the image, from memory and from FITS files,
+// with blank registration borders and registration offsets in the data.
+static void test_tiled_equals_untiled() {
+    SimParams sp = small_sim(31);
+    sp.nmovers = 4;
+    SimResult sim = simulate(sp);
+    // registration-like blank borders that move with the frame, and offsets
+    for (std::size_t i = 0; i < sim.frames.size(); ++i) {
+        Frame& f = sim.frames[i];
+        const int cut = static_cast<int>(i % 5);
+        for (int y = 0; y < f.image.height; ++y)
+            for (int x = 0; x < cut; ++x) f.image.at(x, y) = NAN;
+        f.has_reg_offset = true;
+        f.reg_dx = -0.5 * static_cast<double>(i % 5);
+        f.reg_dy = 0.25 * static_cast<double>(i % 3);
+    }
+    SearchParams p = quick_search();
+    const SearchResult ref = search(prepare(sim.frames, p), p);
+    CHECK(!ref.candidates.empty());
+    auto same = [&](const SearchResult& r, const char* what) {
+        bool ok = r.threshold_snr == ref.threshold_snr && r.candidates.size() == ref.candidates.size() &&
+                  r.max_snr.data == ref.max_snr.data && r.fwhm_px == ref.fwhm_px;
+        for (std::size_t k = 0; ok && k < r.candidates.size(); ++k) {
+            const Candidate &a = r.candidates[k], &b = ref.candidates[k];
+            ok = a.x == b.x && a.y == b.y && a.vx_pxh == b.vx_pxh && a.vy_pxh == b.vy_pxh && a.snr == b.snr &&
+                 a.snr_coarse == b.snr_coarse && a.snr_half1 == b.snr_half1 && a.snr_half2 == b.snr_half2 &&
+                 a.flux == b.flux && a.flags == b.flags && a.ok == b.ok && a.max_frame_fraction == b.max_frame_fraction;
+        }
+        if (!ok) std::printf("    %s: threshold %.6f vs %.6f, %zu vs %zu candidates\n", what, r.threshold_snr,
+                             ref.threshold_snr, r.candidates.size(), ref.candidates.size());
+        CHECK(ok);
+    };
+    const auto mem = memory_frame_source(sim.frames);
+    for (int tile : {48, 100, 1000}) {
+        TileOptions to;
+        to.tile = tile;
+        same(search_tiled(*mem, p, to), tile == 48 ? "tile 48" : tile == 100 ? "tile 100" : "tile 1000");
+    }
+    // from FITS files on disk
+    const fs::path dir = temp_dir() / "tiled";
+    fs::create_directories(dir);
+    std::vector<std::string> files;
+    for (std::size_t i = 0; i < sim.frames.size(); ++i) {
+        files.push_back((dir / ("f" + std::to_string(100 + i) + ".fits")).string());
+        write_frame(files.back(), sim.frames[i]);
+    }
+    const SearchResult from_disk_untiled = search(prepare(load_frames(files), p), p);
+    const auto disk = fits_frame_source(files);
+    TileOptions to;
+    to.tile = 64;
+    Prepared meta;
+    const SearchResult tiled_disk = search_tiled(*disk, p, to, &meta);
+    CHECK(tiled_disk.candidates.size() == from_disk_untiled.candidates.size());
+    CHECK(tiled_disk.max_snr.data == from_disk_untiled.max_snr.data);
+    CHECK(meta.nframes == static_cast<int>(files.size()) && meta.fwhm_px == ref.fwhm_px);
+    // a planned tiling under a small budget uses several tiles
+    const TilePlan plan = plan_tiles(*mem, p, TileOptions{0, 40.0});
+    CHECK(plan.tiles_x * plan.tiles_y > 1);
+}
+
 static void test_c_api() { CHECK(run_c_api_test() == 0); }
 
 int main() {
@@ -613,6 +674,7 @@ int main() {
         {"crop and 16-bit FITS", test_crop_and_int16},
         {"regression case files", test_regression_case},
         {"memory layout", test_memory_layout},
+        {"tiled search equals untiled", test_tiled_equals_untiled},
         {"C API", test_c_api},
     };
     int failed = 0;

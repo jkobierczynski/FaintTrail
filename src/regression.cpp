@@ -18,6 +18,7 @@
 #include "fainttrail/astrometry.hpp"
 #include "fainttrail/fits.hpp"
 #include "fainttrail/io.hpp"
+#include "fainttrail/tiled.hpp"
 
 namespace fs = std::filesystem;
 
@@ -172,6 +173,7 @@ RegressionCase load_regression_case(const std::string& path) {
             else if (key == "seed") p.seed = static_cast<std::uint64_t>(num());
             else if (key == "wcs_from") c.wcs_from = resolve(base, val);
             else if (key == "wcs_scale") c.wcs_scale = num();
+            else if (key == "tile") c.tile = static_cast<int>(num());
             else throw std::runtime_error(where + ": unknown search key '" + key + "'");
         } else if (section == "expect") {
             if (key == "max_unexpected") c.max_unexpected = static_cast<int>(num());
@@ -231,32 +233,51 @@ RegressionOutcome run_regression_case(const RegressionCase& c, const RegressionO
         out.skip_reason = "no FITS files in " + c.data_dir;
         return out;
     }
-    auto frames = load_frames(files);
     auto add = [&](bool ok, bool hard, std::string text) { out.checks.push_back({ok, hard, std::move(text)}); };
-    if (!c.wcs_from.empty()) {
-        const auto rep = apply_wcs_from_file(c.wcs_from, frames, c.wcs_scale);
-        add(rep.ok, true, fmt("plate solution transferred: %d stars, rms %.2f px", rep.matched, rep.rms_px));
-    }
-    out.load_s = seconds_since(t0);
-    out.nframes = frames.size();
-    out.width = frames.front().image.width;
-    out.height = frames.front().image.height;
-
-    // ---- search
     SearchParams p = c.params;
     if (!opt.backend.empty()) p.backend = opt.backend;
     if (opt.threads > 0) p.threads = opt.threads;
+    const int tile = opt.tile > 0 ? opt.tile : c.tile;
     ProgressFn pp, sp;
     if (progress) {
         pp = [&](double f, const std::string& s) { return progress(0.1 * f, s); };
         sp = [&](double f, const std::string& s) { return progress(0.1 + 0.9 * f, s); };
     }
-    t0 = std::chrono::steady_clock::now();
-    const Prepared prep = prepare(std::move(frames), p, pp);
-    out.prepare_s = seconds_since(t0);
-    t0 = std::chrono::steady_clock::now();
-    out.result = search(prep, p, sp);
-    out.search_s = seconds_since(t0);
+    Prepared prep;
+    if (tile > 0) {
+        // tiled: frames are read from the files tile by tile
+        auto src = fits_frame_source(files);
+        if (!c.wcs_from.empty()) {
+            const auto rep = apply_wcs_from_file(c.wcs_from, *src, c.wcs_scale);
+            add(rep.ok, true, fmt("plate solution transferred: %d stars, rms %.2f px", rep.matched, rep.rms_px));
+        }
+        out.load_s = seconds_since(t0);
+        out.nframes = static_cast<std::size_t>(src->count());
+        out.width = src->width();
+        out.height = src->height();
+        TileOptions to;
+        to.tile = tile;
+        out.tiles = tile;
+        t0 = std::chrono::steady_clock::now();
+        out.result = search_tiled(*src, p, to, &prep, progress);
+        out.search_s = seconds_since(t0);
+    } else {
+        auto frames = load_frames(files);
+        if (!c.wcs_from.empty()) {
+            const auto rep = apply_wcs_from_file(c.wcs_from, frames, c.wcs_scale);
+            add(rep.ok, true, fmt("plate solution transferred: %d stars, rms %.2f px", rep.matched, rep.rms_px));
+        }
+        out.load_s = seconds_since(t0);
+        out.nframes = frames.size();
+        out.width = frames.front().image.width;
+        out.height = frames.front().image.height;
+        t0 = std::chrono::steady_clock::now();
+        prep = prepare(std::move(frames), p, pp);
+        out.prepare_s = seconds_since(t0);
+        t0 = std::chrono::steady_clock::now();
+        out.result = search(prep, p, sp);
+        out.search_s = seconds_since(t0);
+    }
     out.profile = profile_text(prep, out.result, out.load_s);
     for (const auto& st : prep.timings) out.memory_mb = std::max(out.memory_mb, st.rss_mb);
     for (const auto& st : out.result.timings) out.memory_mb = std::max(out.memory_mb, st.rss_mb);

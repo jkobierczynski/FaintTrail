@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.6.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
+> Status: **0.7.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -95,6 +95,11 @@ On Debian/Ubuntu the GUI needs `qt6-base-dev`.
   the sensor (warm pixels carried along by the registration) are rejected.
 * At least 5 frames; synthetic tracking pays off from about 20. The sequence should
   last long enough for targets to move at least two PSF widths.
+* **Large sequences** are searched in tiles automatically when they would not fit in
+  60 % of the RAM (`--max-memory MB` sets the budget, `--tile N` forces a tile size,
+  `--no-tile` turns it off). Frames are then read from disk a tile at a time and the
+  result is identical to the untiled search; it takes longer (about 1.4× for the
+  Leo Triplet case).
 
 ## Output
 
@@ -174,7 +179,8 @@ null calibration) and the kernel is limited by memory bandwidth. Since 0.5 the C
 backend is cache-blocked: the full Leo Triplet run went from 578 s to 175 s on the
 same 2-core machine, with bit-identical results. Since 0.6 a search keeps about
 3 copies of the sequence in memory at its peak instead of 6 (Leo Triplet: 2.1 GB →
-1.1 GB).
+1.1 GB). Since 0.7 sequences that do not fit are searched in tiles, read from disk
+a tile at a time, with identical results: the same run in 2 × 2 tiles needs 380 MB.
 
 ## Validation
 
@@ -195,7 +201,6 @@ fainttrail regress tests/regression [--backend NAME] [--strict]
 ## Roadmap
 
 * CUDA backend behind the same search interface, with the CPU path as reference
-* tiling for large sensors and long sequences
 * curved motion for fast near-Earth objects
 * more real-data cases (fainter and faster objects), then integration with AstroFind and Siril
 

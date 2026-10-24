@@ -147,12 +147,14 @@ float static_sky_column(const std::vector<Image>& sub, std::size_t idx, const st
     }
     // too few frames cover this pixel for a reliable static sky (field edges)
     if (sorted.size() < std::max<std::size_t>(5, static_cast<std::size_t>(0.6 * n))) {
-        for (int i = 0; i < n; ++i) residual[i] = NAN;
+        if (residual)
+            for (int i = 0; i < n; ++i) residual[i] = NAN;
         return NAN;
     }
     std::sort(sorted.begin(), sorted.end());
     const std::size_t m_all = sorted.size();
     const double global = 0.5 * (sorted[(m_all - 1) / 2].first + sorted[m_all / 2].first);
+    if (!residual) return static_cast<float>(global);
     for (int i = 0; i < n; ++i) {
         const float v = vals[static_cast<std::size_t>(i)];
         if (!std::isfinite(v)) {
@@ -212,9 +214,86 @@ Image residual_patch(const Prepared& p, int frame, int x0, int y0, int w, int h)
 // Steps that depend on the time order of the frames: static sky, residuals,
 // noise, mask and matched filter. Used for the real data and, with permuted
 // times, for every null run, so that both see exactly the same estimator.
+void subtract_and_grow(Image& im, double bg) {
+    const int w = im.width, h = im.height;
+    for (auto& v : im.data) v = std::isfinite(v) ? static_cast<float>(v - bg) : NAN;
+    // Registered frames carry blank (NaN) borders where the field drifted out.
+    // Interpolation leaves damaged pixels along those borders, so the blank area
+    // is grown by a few pixels.
+    const int grow = kBlankGrow;
+    std::vector<unsigned char> bad(im.data.size(), 0);
+    bool any = false;
+    for (std::size_t k = 0; k < im.data.size(); ++k)
+        if (!std::isfinite(im.data[k])) { bad[k] = 1; any = true; }
+    if (!any) return;
+    Image grown = im;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            if (!bad[static_cast<std::size_t>(y) * w + x]) continue;
+            for (int dy = -grow; dy <= grow; ++dy)
+                for (int dx = -grow; dx <= grow; ++dx)
+                    if (grown.inside(x + dx, y + dy)) grown.at(x + dx, y + dy) = NAN;
+        }
+    im = std::move(grown);
+}
+
+double estimate_psf_fwhm(const Image& static_sky, std::vector<double> sg, const SearchParams& params) {
+    const int n = static_cast<int>(sg.size());
+    std::nth_element(sg.begin(), sg.begin() + n / 2, sg.end());
+    const double static_noise = sg[static_cast<std::size_t>(n / 2)] / std::sqrt(static_cast<double>(n));
+    double f = params.fwhm_px > 0.0 ? params.fwhm_px : estimate_fwhm(static_sky, static_noise);
+    if (!(f > 0.0)) f = 3.0;  // sensible default when no stars are found
+    return f;
+}
+
+double sigma_from_samples(std::vector<float>& s) {
+    const double sg = detail::robust_sigma(s);
+    return sg > 0.0 ? sg : 1.0;
+}
+
+bool SampleGrid::hit(int gx, int gy) const {
+    if (gx < border || gy < border || gx >= full_w - border || gy >= full_h - border) return false;
+    return (gx - border) % step == 0 && (gy - border) % step == 0;
+}
+
+SampleGrid sample_grid(int full_w, int full_h, std::size_t max_samples, int border) {
+    SampleGrid g;
+    g.full_w = full_w;
+    g.full_h = full_h;
+    g.border = border;
+    const std::size_t usable = static_cast<std::size_t>(std::max(0, full_w - 2 * border)) *
+                               static_cast<std::size_t>(std::max(0, full_h - 2 * border));
+    g.step = usable == 0 ? 1 : std::max(1, static_cast<int>(std::sqrt(static_cast<double>(usable) / max_samples)));
+    return g;
+}
+
 void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams& params,
-                 const ProgressFn& progress, bool estimate_psf) {
+                 const ProgressFn& progress, bool estimate_psf, StageMode mode, const StageRegion* region,
+                 const StageGlobals* globals, StageSamples* samples) {
     const int n = p.nframes, w = p.width, h = p.height;
+    // A region of a larger image (tiled search): per-frame quantities measured on the
+    // whole image come from `globals`, samples for them are collected over the core
+    // only, at the same positions sample_pixels() would use on the whole image.
+    const bool regional = region != nullptr;
+    const int ox = regional ? region->ox : 0, oy = regional ? region->oy : 0;
+    const int fw = regional ? region->full_w : w, fh = regional ? region->full_h : h;
+    const int cx0 = regional ? region->cx0 : 0, cy0 = regional ? region->cy0 : 0;
+    const int cx1 = regional ? region->cx1 : w, cy1 = regional ? region->cy1 : h;
+    auto collect = [&](const Image& img, const SampleGrid& grid, const Image* mask, std::vector<float>& out) {
+        const int st = grid.step, b = grid.border;
+        for (int y = cy0; y < cy1; ++y) {
+            const int gy = oy + y;
+            if (gy < b || gy >= grid.full_h - b || (gy - b) % st != 0) continue;
+            int gx = std::max(b, ox + cx0);
+            gx += ((b - gx) % st + st) % st;  // first sampled column at or after the core start
+            for (; gx < std::min(ox + cx1, grid.full_w - b); gx += st) {
+                const int x = gx - ox;
+                if (mask && mask->at(x, y) == 0.0f) continue;
+                const float v = img.at(x, y);
+                if (std::isfinite(v)) out.push_back(v);
+            }
+        }
+    };
     auto report = [&](double f, const char* stage) {
         if (progress && !progress(f, stage)) throw Cancelled();
     };
@@ -258,22 +337,19 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
     sw.lap("static sky + residuals");
     // per-frame residual noise
     report(0.3, "residuals");
-    p.sigma.assign(static_cast<std::size_t>(n), 1.0);
+    if (globals && globals->sigma) {
+        p.sigma = *globals->sigma;
+    } else {
+        p.sigma.assign(static_cast<std::size_t>(n), 1.0);
 #pragma omp parallel for num_threads(nt) schedule(dynamic)
-    for (int i = 0; i < n; ++i) {
-        auto s = detail::sample_pixels(p.residual[static_cast<std::size_t>(i)], 200000, nullptr, 2);
-        const double sg = detail::robust_sigma(s);
-        p.sigma[static_cast<std::size_t>(i)] = sg > 0.0 ? sg : 1.0;
+        for (int i = 0; i < n; ++i) {
+            auto s = detail::sample_pixels(p.residual[static_cast<std::size_t>(i)], 200000, nullptr, 2);
+            p.sigma[static_cast<std::size_t>(i)] = sigma_from_samples(s);
+        }
     }
 
     // PSF width
-    if (estimate_psf) {
-        std::vector<double> sg(p.sigma);
-        std::nth_element(sg.begin(), sg.begin() + n / 2, sg.end());
-        const double static_noise = sg[static_cast<std::size_t>(n / 2)] / std::sqrt(static_cast<double>(n));
-        p.fwhm_px = params.fwhm_px > 0.0 ? params.fwhm_px : estimate_fwhm(p.static_sky, static_noise);
-        if (!(p.fwhm_px > 0.0)) p.fwhm_px = 3.0;  // sensible default when no stars are found
-    }
+    if (estimate_psf) p.fwhm_px = estimate_psf_fwhm(p.static_sky, p.sigma, params);
 
     sw.lap("noise + PSF");
     // temporal scatter map -> weights and mask
@@ -315,6 +391,7 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
     const float wscat = static_cast<float>(params.weight_scatter);
     p.filtered.assign(static_cast<std::size_t>(n), Image());
     p.cr_pixels.assign(static_cast<std::size_t>(n), 0);
+    if (mode == StageMode::FilterSamples) samples->per_frame.assign(static_cast<std::size_t>(n), {});
     std::atomic<int> done{0};
     std::atomic<bool> cancel{false};
 #pragma omp parallel for num_threads(nt) schedule(dynamic)
@@ -344,7 +421,7 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
                     if (v < hit) continue;
                     const float n4 = 0.25f * (z.data[k - 1] + z.data[k + 1] + z.data[k - w] + z.data[k + w]);
                     if (n4 >= ratio * v) continue;
-                    ++cr;
+                    if (x >= cx0 && x < cx1 && y >= cy0 && y < cy1) ++cr;
                     // remove the hit and any bright pixels touching it
                     for (int dy = -1; dy <= 1; ++dy)
                         for (int dx = -1; dx <= 1; ++dx) {
@@ -358,8 +435,20 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
         for (auto& v : z.data) v = std::clamp(v, -clip, clip);
         Image g, tmp;
         matched_filter(z, g, psf_sigma, tmp);
-        auto s = detail::sample_pixels(g, 200000, &p.mask, static_cast<int>(std::ceil(3 * psf_sigma)) + 1);
-        const double sg = detail::robust_sigma(s);
+        const int fborder = static_cast<int>(std::ceil(3 * psf_sigma)) + 1;
+        if (mode == StageMode::FilterSamples) {
+            collect(g, sample_grid(fw, fh, 200000, fborder), &p.mask, samples->per_frame[static_cast<std::size_t>(i)]);
+            if (!params.keep_residuals) p.residual[static_cast<std::size_t>(i)] = Image();
+            ++done;
+            continue;
+        }
+        double sg = 0.0;
+        if (globals && globals->filter_sg) {
+            sg = (*globals->filter_sg)[static_cast<std::size_t>(i)];
+        } else {
+            auto s = detail::sample_pixels(g, 200000, &p.mask, fborder);
+            sg = detail::robust_sigma(s);
+        }
         if (sg > 0.0) {
             const float ig = static_cast<float>(1.0 / sg);
             for (auto& v : g.data) v *= ig;
@@ -456,28 +545,7 @@ Prepared prepare_frames(std::vector<Frame>& frames, bool steal, const SearchPara
         const double bg = detail::median_inplace(s);
         p.background[static_cast<std::size_t>(i)] = bg;
         Image im = steal ? std::move(frames[static_cast<std::size_t>(i)].image) : frames[static_cast<std::size_t>(i)].image;
-        for (auto& v : im.data) v = std::isfinite(v) ? static_cast<float>(v - bg) : NAN;
-        // Registered frames carry blank (NaN) borders where the field drifted out.
-        // Interpolation leaves damaged pixels along those borders, so the blank area
-        // is grown by a few pixels.
-        {
-            const int grow = 3;
-            std::vector<unsigned char> bad(im.data.size(), 0);
-            bool any = false;
-            for (std::size_t k = 0; k < im.data.size(); ++k)
-                if (!std::isfinite(im.data[k])) { bad[k] = 1; any = true; }
-            if (any) {
-                Image grown = im;
-                for (int y = 0; y < h; ++y)
-                    for (int x = 0; x < w; ++x) {
-                        if (!bad[static_cast<std::size_t>(y) * w + x]) continue;
-                        for (int dy = -grow; dy <= grow; ++dy)
-                            for (int dx = -grow; dx <= grow; ++dx)
-                                if (grown.inside(x + dx, y + dy)) grown.at(x + dx, y + dy) = NAN;
-                    }
-                im = std::move(grown);
-            }
-        }
+        detail::subtract_and_grow(im, bg);
         p.sub[static_cast<std::size_t>(i)] = std::move(im);
     }
     sw.lap("background + borders");

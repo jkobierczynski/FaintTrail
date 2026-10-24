@@ -4,6 +4,7 @@
 // Process memory use, for profiling.
 #include "common.hpp"
 
+#include <cstdint>
 #include <cstdio>
 
 #if defined(_WIN32)
@@ -13,6 +14,7 @@
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #include <sys/resource.h>
+#include <sys/sysctl.h>
 #else
 #include <sys/resource.h>
 #include <unistd.h>
@@ -70,6 +72,23 @@ void release_free_memory() {
 }  // namespace fainttrail::detail
 
 namespace fainttrail {
+
+double physical_memory_mb() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX st;
+    st.dwLength = sizeof st;
+    if (GlobalMemoryStatusEx(&st)) return st.ullTotalPhys / 1048576.0;
+    return 0.0;
+#elif defined(__APPLE__)
+    std::uint64_t bytes = 0;
+    std::size_t len = sizeof bytes;
+    if (sysctlbyname("hw.memsize", &bytes, &len, nullptr, 0) == 0) return bytes / 1048576.0;
+    return 0.0;
+#else
+    const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+    return pages > 0 && page > 0 ? static_cast<double>(pages) * page / 1048576.0 : 0.0;
+#endif
+}
 
 void tune_allocator_for_images() {
 #if defined(__GLIBC__)

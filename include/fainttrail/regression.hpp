@@ -26,7 +26,8 @@
 //   baseline    = leo-triplet-cut.baseline.csv  # optional
 //
 //   [search]      vmin, vmax, threshold, null_runs, false_per_run, fwhm, grid_tol,
-//                 static_exclude, mask_scatter, weight_scatter, seed, wcs_from, wcs_scale
+//                 static_exclude, mask_scatter, weight_scatter, seed, wcs_from, wcs_scale,
+//                 tile (> 0: tiled search with this tile size)
 //   [expect]      max_unexpected (default 0), threshold_min, threshold_max
 //   [object NAME] mjd, x, y (FITS 1-based pixels at mjd), vx, vy (px/h),
 //                 pos_tol (px, default 1.5), vel_tol (px/h, default 3), min_snr,
@@ -63,6 +64,7 @@ struct RegressionCase {
     std::string baseline_path;   // resolved, empty if none
     std::string wcs_from;        // resolved, empty if none
     double wcs_scale = 0.0;
+    int tile = 0;                // > 0: tiled search with this tile size
     SearchParams params;
     int max_unexpected = 0;
     double threshold_min = 0.0, threshold_max = 0.0;  // 0 = unchecked
@@ -89,13 +91,15 @@ struct RegressionOutcome {
     int width = 0, height = 0;
     double load_s = 0.0, prepare_s = 0.0, search_s = 0.0;
     std::string profile;  // profile_text() of the run
-    double memory_mb = 0.0;  // highest resident memory at the end of any stage of this case
+    double memory_mb = 0.0;
+    int tiles = 0;           // tile size used, 0 = untiled  // highest resident memory at the end of any stage of this case
 };
 
 struct RegressionOptions {
     std::string backend;  // empty: as in the case (normally auto)
     int threads = 0;
     bool strict = false;  // baseline changes fail the case
+    int tile = 0;         // > 0: run every case as a tiled search with this tile size
 };
 
 RegressionOutcome run_regression_case(const RegressionCase& c, const RegressionOptions& opt = {},

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fainttrail VERSION 0.6.0 LANGUAGES C CXX
+project(fainttrail VERSION 0.7.0 LANGUAGES C CXX
         DESCRIPTION "Synthetic tracking engine for faint asteroid and comet detection")
 
 set(CMAKE_CXX_STANDARD 17)
@@ -31,6 +31,7 @@ add_library(fainttrail
   src/astrometry.cpp
   src/regression.cpp
   src/memory.cpp
+  src/tiled.cpp
   src/backend.cpp
   src/backend_cpu.cpp
   src/c_api.cpp)
@@ -102,6 +103,11 @@ if(FAINTTRAIL_BUILD_TESTS)
       get_filename_component(case_name ${case_file} NAME_WE)
       add_test(NAME regress_${case_name} COMMAND fainttrail_cli regress ${case_file} --strict --quiet)
       set_tests_properties(regress_${case_name} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 3600 LABELS regression)
+      # the small fixtures again as tiled searches: they must give the same result
+      if(case_name MATCHES "-cut$")
+        add_test(NAME regress_${case_name}_tiled COMMAND fainttrail_cli regress ${case_file} --strict --quiet --tile 48)
+        set_tests_properties(regress_${case_name}_tiled PROPERTIES TIMEOUT 600 LABELS regression)
+      endif()
     endforeach()
   endif()
 endif()

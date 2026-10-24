@@ -5,6 +5,8 @@
 // Reads BITPIX 8/16/32/64/-32/-64 (with BSCALE/BZERO); writes BITPIX -32.
 #pragma once
 
+#include <cstddef>
+#include <istream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,6 +45,25 @@ struct FitsImage {
 // Read the primary HDU (or the first image extension if the primary is empty).
 // For 3-D cubes the first plane is returned. Throws std::runtime_error on failure.
 FitsImage read_fits(const std::string& path);
+
+// Where the image of a FITS file lives, for reading parts of it without loading
+// the whole image (tiled search of large frames).
+struct FitsLayout {
+    std::string path;
+    FitsHeader header;
+    int width = 0, height = 0;
+    long long bitpix = 0;
+    std::size_t data_offset = 0;
+    double bscale = 1.0, bzero = 0.0;
+    bool has_blank = false;
+    long long blank = 0;
+};
+FitsLayout fits_layout(const std::string& path);
+
+// Read the rectangle (0-based x0, y0, size w x h) with the same scaling and blank
+// handling as read_fits(). `stream` may be an already open stream of the file.
+void read_fits_region(const FitsLayout& layout, int x0, int y0, int w, int h, Image& out,
+                      std::istream* stream = nullptr);
 
 // Write a float image as BITPIX = -32. Structural keywords are generated;
 // any SIMPLE/BITPIX/NAXIS* cards in `header` are ignored.

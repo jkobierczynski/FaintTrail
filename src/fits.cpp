@@ -259,7 +259,7 @@ void FitsHeader::add_history(const std::string& text) {
 }
 
 // ------------------------------------------------------------------ read
-FitsImage read_fits(const std::string& path) {
+FitsLayout fits_layout(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) throw std::runtime_error("cannot open FITS file: " + path);
     in.seekg(0, std::ios::end);
@@ -275,48 +275,76 @@ FitsImage read_fits(const std::string& path) {
         const std::string xt = upper(hdu.header.get_string("XTENSION", hdu_index == 0 ? "PRIMARY" : ""));
         const bool image_hdu = (hdu_index == 0 || xt == "IMAGE");
         if (image_hdu && naxis >= 2) {
-            const int w = static_cast<int>(hdu.header.get_int("NAXIS1", 0));
-            const int h = static_cast<int>(hdu.header.get_int("NAXIS2", 0));
-            const long long bitpix = hdu.header.get_int("BITPIX", 0);
-            if (w <= 0 || h <= 0) throw std::runtime_error("invalid image size in " + path);
-            const std::size_t bpp = static_cast<std::size_t>(std::llabs(bitpix) / 8);
-            const std::size_t npix = static_cast<std::size_t>(w) * h;
-            if (hdu.data_offset + npix * bpp > file_size)
-                throw std::runtime_error("truncated FITS data in " + path);
-            std::vector<unsigned char> raw(npix * bpp);
-            in.clear();
-            in.seekg(static_cast<std::streamoff>(hdu.data_offset));
-            in.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
-            if (!in) throw std::runtime_error("failed reading FITS data in " + path);
-            const double bscale = hdu.header.get_double("BSCALE", 1.0);
-            const double bzero = hdu.header.get_double("BZERO", 0.0);
-            const bool has_blank = hdu.header.has("BLANK") && bitpix > 0;
-            const long long blank = hdu.header.get_int("BLANK", 0);
-
-            FitsImage out;
-            out.image = Image(w, h);
-            out.header = std::move(hdu.header);
-            for (std::size_t i = 0; i < npix; ++i) {
-                const unsigned char* p = raw.data() + i * bpp;
-                double v = 0.0;
-                bool is_blank = false;
-                switch (bitpix) {
-                    case 8: v = p[0]; is_blank = has_blank && p[0] == blank; break;
-                    case 16: { auto s = read_be<std::int16_t>(p); v = s; is_blank = has_blank && s == blank; } break;
-                    case 32: { auto s = read_be<std::int32_t>(p); v = s; is_blank = has_blank && s == blank; } break;
-                    case 64: { auto s = read_be<std::int64_t>(p); v = static_cast<double>(s); is_blank = has_blank && s == blank; } break;
-                    case -32: v = read_be<float>(p); break;
-                    case -64: v = read_be<double>(p); break;
-                    default: throw std::runtime_error("unsupported BITPIX in " + path);
-                }
-                out.image.data[i] = is_blank ? NAN : static_cast<float>(bzero + bscale * v);
+            FitsLayout L;
+            L.path = path;
+            L.width = static_cast<int>(hdu.header.get_int("NAXIS1", 0));
+            L.height = static_cast<int>(hdu.header.get_int("NAXIS2", 0));
+            L.bitpix = hdu.header.get_int("BITPIX", 0);
+            if (L.width <= 0 || L.height <= 0) throw std::runtime_error("invalid image size in " + path);
+            switch (L.bitpix) {
+                case 8: case 16: case 32: case 64: case -32: case -64: break;
+                default: throw std::runtime_error("unsupported BITPIX in " + path);
             }
-            return out;
+            const std::size_t bpp = static_cast<std::size_t>(std::llabs(L.bitpix) / 8);
+            if (hdu.data_offset + static_cast<std::size_t>(L.width) * L.height * bpp > file_size)
+                throw std::runtime_error("truncated FITS data in " + path);
+            L.data_offset = hdu.data_offset;
+            L.bscale = hdu.header.get_double("BSCALE", 1.0);
+            L.bzero = hdu.header.get_double("BZERO", 0.0);
+            L.has_blank = hdu.header.has("BLANK") && L.bitpix > 0;
+            L.blank = hdu.header.get_int("BLANK", 0);
+            L.header = std::move(hdu.header);
+            return L;
         }
         std::size_t data_padded = (hdu.data_bytes + kBlock - 1) / kBlock * kBlock;
         offset = hdu.data_offset + data_padded;
     }
     throw std::runtime_error("no 2-D image found in " + path);
+}
+
+void read_fits_region(const FitsLayout& L, int x0, int y0, int w, int h, Image& out, std::istream* stream) {
+    if (x0 < 0 || y0 < 0 || w <= 0 || h <= 0 || x0 + w > L.width || y0 + h > L.height)
+        throw std::runtime_error("FITS region outside the image: " + L.path);
+    std::ifstream own;
+    std::istream* in = stream;
+    if (!in) {
+        own.open(L.path, std::ios::binary);
+        if (!own) throw std::runtime_error("cannot open FITS file: " + L.path);
+        in = &own;
+    }
+    const std::size_t bpp = static_cast<std::size_t>(std::llabs(L.bitpix) / 8);
+    out = Image(w, h);
+    std::vector<unsigned char> raw(static_cast<std::size_t>(w) * bpp);
+    for (int y = 0; y < h; ++y) {
+        const std::size_t pos = L.data_offset + (static_cast<std::size_t>(y0 + y) * L.width + x0) * bpp;
+        in->clear();
+        in->seekg(static_cast<std::streamoff>(pos));
+        in->read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(raw.size()));
+        if (!*in) throw std::runtime_error("failed reading FITS data in " + L.path);
+        float* o = &out.data[static_cast<std::size_t>(y) * w];
+        for (int x = 0; x < w; ++x) {
+            const unsigned char* p = raw.data() + static_cast<std::size_t>(x) * bpp;
+            double v = 0.0;
+            bool is_blank = false;
+            switch (L.bitpix) {
+                case 8: v = p[0]; is_blank = L.has_blank && p[0] == L.blank; break;
+                case 16: { auto s = read_be<std::int16_t>(p); v = s; is_blank = L.has_blank && s == L.blank; } break;
+                case 32: { auto s = read_be<std::int32_t>(p); v = s; is_blank = L.has_blank && s == L.blank; } break;
+                case 64: { auto s = read_be<std::int64_t>(p); v = static_cast<double>(s); is_blank = L.has_blank && s == L.blank; } break;
+                case -32: v = read_be<float>(p); break;
+                default: v = read_be<double>(p); break;
+            }
+            o[x] = is_blank ? NAN : static_cast<float>(L.bzero + L.bscale * v);
+        }
+    }
+}
+
+FitsImage read_fits(const std::string& path) {
+    FitsLayout L = fits_layout(path);
+    FitsImage out;
+    read_fits_region(L, 0, 0, L.width, L.height, out.image);
+    out.header = std::move(L.header);
+    return out;
 }
 
 // ------------------------------------------------------------------ write
