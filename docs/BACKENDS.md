@@ -28,8 +28,12 @@ The header defines the computation exactly; in short:
 * Output: the maximum over all motions and the index of the maximising motion;
   0 and -1 where no motion is defined; ties go to the lowest motion index.
 
-The CPU backend follows this bit for bit (tested against a deliberately naive
-implementation, `run_pass_naive`, including tie-breaking and partial coverage).
+The CPU backend (cache-blocked, see [PROFILING.md](PROFILING.md)) follows this bit
+for bit. It is tested against two independent implementations: a deliberately
+naive one, `run_pass_naive` (one pixel at a time, including tie-breaking and
+partial coverage), and `run_pass_simple`, the straightforward whole-image kernel
+of FaintTrail 0.2–0.4, which is fast enough to check other backends on realistic
+image sizes. Every block size gives the same result.
 Other backends may sum in a different order: their S/N must agree within
 1e-4 · max(1, |S/N|), and the chosen motion may differ only where the two
 motions' S/N values are within that same tolerance. `check_backend()` and the

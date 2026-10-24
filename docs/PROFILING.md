@@ -18,8 +18,9 @@ profile is what matters here.
   each stacking pass, and the stacking throughput. The data are also available in
   the library (`Prepared::timings`, `SearchResult::timings`, `StackResult::timings`).
 * `fainttrail_kernel_bench` (built with `-DFAINTTRAIL_BUILD_TOOLS=ON`) measures the
-  machine's memory bandwidth, the production stacking kernel, and prototype
-  cache-blocked variants of it on random frames of any size.
+  machine's memory bandwidth, the simple whole-image kernel and the cache-blocked
+  backend with a range of block sizes, on random frames of any size. (In 0.4 it
+  compared prototypes; the tables below come from that version.)
 
 ## The full Leo Triplet run
 
@@ -106,6 +107,47 @@ judged by memory bandwidth and by how well it keeps the accumulation on chip. Th
 banded CPU layout is the same structure a CUDA kernel would use (a band in shared
 memory, frames streamed through), so item 1 is also the design study for the GPU
 kernel. A mid-range GPU with 300–500 GB/s is 10–20× the bandwidth of this VM.
+
+## After step 4: the cache-blocked CPU backend (0.5.0)
+
+Item 1 is implemented: the CPU backend works in bands of 8 rows and blocks of
+8–16 motions (chosen from the image width so the accumulators take about 600 kB),
+and computes coverage from the frames' column intervals, so a row becomes a few
+segments of constant coverage with a plain, vectorisable maximum inside. Each band
+belongs to one thread, so the per-thread result images and their merge are gone.
+
+The old (0.4) and new (0.5) builds were run back to back on the same machine,
+with `--strict` against the 0.4 baselines. All candidates, verdicts and
+thresholds are identical, as are the unit tests and `check-backend`, which
+compare bit for bit with two independent implementations.
+
+| case | stacking 0.4 | stacking 0.5 | speed-up | throughput 0.5 | total 0.4 → 0.5 |
+|---|---:|---:|---:|---:|---:|
+| Leo Triplet (20 × 2328 × 1760) | 551 s | 147 s | **3.7×** | 7.0 G adds/s | 578 s → **175 s** |
+| Ceres (11 × 1391 × 1039) | 76.8 s | 26.3 s | 2.9× | 5.6 G adds/s | 81 s → 31 s |
+| Mariekebaan (82 × 695 × 519) | 27.9 s | 13.4 s | 2.1× | 6.4 G adds/s | 48 s → 35 s |
+
+(The machine was slower on this day than in the first measurement above: the 0.4
+build reached 1.9 G adds/s instead of 2.55.)
+
+The kernel benchmark gives the same picture (2328 × 1760, 20 frames): 1.57 G
+adds/s for the simple kernel and 4.5 G adds/s for the blocked one on 2 threads.
+Block sizes from 4 to 16 rows and 8 to 16 motions are within about 15 % of each
+other; `fainttrail_kernel_bench` lists them, so the defaults can be checked on
+other machines.
+
+What is left, for the Leo run:
+
+| stage | share after 0.5 |
+|---|---:|
+| stacking, null runs | 62 % |
+| stacking, real data | 21 % |
+| null-run preprocessing | 11 % |
+| preprocessing and the rest | 6 % |
+
+Inside the stacking, accumulation is now 82 % and coverage + maximum 18 %. The
+next gains are the cheaper null calibration (item 2) and, for long sequences, the
+leave-out median (item 4); memory (item 3) is unchanged at 2.1 GB.
 
 ## Reproducing
 

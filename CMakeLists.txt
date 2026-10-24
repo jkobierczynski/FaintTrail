@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fainttrail VERSION 0.4.0 LANGUAGES C CXX
+project(fainttrail VERSION 0.5.0 LANGUAGES C CXX
         DESCRIPTION "Synthetic tracking engine for faint asteroid and comet detection")
 
 set(CMAKE_CXX_STANDARD 17)
@@ -86,6 +86,7 @@ if(FAINTTRAIL_BUILD_TESTS)
   enable_testing()
   add_executable(fainttrail_tests tests/test_main.cpp tests/test_c_api.c)
   target_link_libraries(fainttrail_tests PRIVATE fainttrail)
+  target_include_directories(fainttrail_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME fainttrail_tests COMMAND fainttrail_tests)
   set_tests_properties(fainttrail_tests PROPERTIES TIMEOUT 600)
   # Real-data regression cases: small fixtures in the repository run everywhere;

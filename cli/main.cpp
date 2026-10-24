@@ -440,9 +440,8 @@ int cmd_check_backend(const Args& a) {
             auto [ref, tr] = timed([&] { return run_pass_naive(pass); });
             report("vs naive contract (72x52, 12 fr)", check_backend(pass, ref, got), tr, tc);
         } else {
-            auto cpu = make_backend("cpu");
-            auto [ref, tr] = timed([&] { return cpu->run(pass); });
-            report("vs CPU reference (384x320, 40 fr)", check_backend(pass, ref, got), tr, tc);
+            auto [ref, tr] = timed([&] { return run_pass_simple(pass); });
+            report("vs simple reference (384x320, 40 fr)", check_backend(pass, ref, got), tr, tc);
         }
     }
     std::printf("%s\n", all_ok ? "backend conforms to the stacking contract" : "backend does NOT conform");

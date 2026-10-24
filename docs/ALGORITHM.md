@@ -40,14 +40,18 @@ matched-filtered frame is shifted by `round(v * t_i)` and the frames are summed:
 
     S_v(p) = sum_i g_i(p + v t_i) / sqrt(n(p))
 
-`n(p)` is the number of frames that overlap pixel `p` at this velocity (computed
-with a 2-D difference array, so coverage costs almost nothing). Only the per-pixel
-maximum over all velocities and the velocity that produced it are kept. Local
-maxima of this max-S/N map are the raw detections.
+`n(p)` is the number of frames that overlap pixel `p` at this velocity. Only the
+per-pixel maximum over all velocities and the velocity that produced it are kept.
+Local maxima of this max-S/N map are the raw detections.
 
-The inner loop is a contiguous row-wise add, which vectorises well; velocities are
-distributed over threads with OpenMP. The same loop is what a GPU backend will
-parallelise.
+The computation is limited by memory traffic, so the CPU backend is cache-blocked
+(see [PROFILING.md](PROFILING.md)): the image is processed in bands of 8 rows, each
+band by one thread; within a band the velocities are taken 8 or more at a time, and
+each frame's rows are added into small per-velocity accumulators that stay in the
+L2 cache. `n(p)` follows from the frames' column intervals, which split every row
+into segments of constant coverage. The summation order per pixel is unchanged, so
+the result is bit-identical to the plain definition. A GPU backend would use the
+same layout, with a band in shared memory.
 
 ## 3. Threshold calibration
 

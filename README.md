@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.4.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
+> Status: **0.5.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -160,7 +160,7 @@ calibration, refinement and the consistency tests.
 ## Backends
 
 The stacking loop runs behind an interchangeable backend interface with an exact,
-testable contract; the CPU (OpenMP) backend is the reference. See
+testable contract; the cache-blocked CPU (OpenMP) backend is the reference. See
 [docs/BACKENDS.md](docs/BACKENDS.md) for the contract and how to add, for example,
 a CUDA backend.
 
@@ -170,8 +170,9 @@ a CUDA backend.
 pipeline stage and the stacking throughput; `fainttrail_kernel_bench` measures the
 stacking kernel itself. [docs/PROFILING.md](docs/PROFILING.md) has the results for
 the full Leo Triplet run: stacking is 88 % of the time (three quarters of it in the
-null calibration), the kernel is limited by memory bandwidth, and cache blocking
-makes it 2.6–2.9× faster with identical results.
+null calibration) and the kernel is limited by memory bandwidth. Since 0.5 the CPU
+backend is cache-blocked: the full Leo Triplet run went from 578 s to 175 s on the
+same 2-core machine, with bit-identical results.
 
 ## Validation
 

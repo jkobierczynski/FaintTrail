@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "fainttrail/fainttrail.hpp"
+#include "backend_cpu.hpp"
 
 extern "C" int run_c_api_test(void);
 
@@ -406,6 +407,19 @@ static void test_backend_contract() {
             CHECK(got.best_v == ref.best_v);
             CHECK(got.max_snr.data == ref.max_snr.data);
         }
+        // block sizes must not change anything: odd bands, single rows, bands
+        // taller than the image, motion blocks that do not divide the grid
+        for (const auto& blk : {detail::CpuBlocking{1, 1}, detail::CpuBlocking{3, 5}, detail::CpuBlocking{64, 64},
+                                detail::CpuBlocking{7, 2}}) {
+            pass.threads = 2;
+            detail::CpuBackend be(blk);
+            const StackResult got = be.run(pass);
+            CHECK(got.best_v == ref.best_v);
+            CHECK(got.max_snr.data == ref.max_snr.data);
+        }
+        const StackResult simple = run_pass_simple(pass);
+        CHECK(simple.best_v == ref.best_v);
+        CHECK(simple.max_snr.data == ref.max_snr.data);
         if (constant) {
             // all velocities tie wherever they are fully covered: lowest index wins
             // pixel (18,11) is covered by all 7 frames even for velocity 0 (shifts up to 9 px)

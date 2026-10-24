@@ -88,6 +88,11 @@ void validate_pass(const StackPass& pass);
 // backends can be tested against the specification itself.
 StackResult run_pass_naive(const StackPass& pass);
 
+// Simple full-image implementation of the contract (one motion at a time over
+// the whole image), independent of the optimised CPU backend; bit-identical to
+// the naive one and fast enough to check other backends on realistic sizes.
+StackResult run_pass_simple(const StackPass& pass);
+
 struct BackendCheck {
     bool ok = false;
     double max_abs_diff = 0.0;      // largest |d max_snr|
