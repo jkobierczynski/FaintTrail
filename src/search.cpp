@@ -27,6 +27,7 @@
 #include "internal.hpp"
 #include "psf.hpp"
 #include "random.hpp"
+#include "fainttrail/backend.hpp"
 #include "fainttrail/search.hpp"
 
 namespace fainttrail {
@@ -63,102 +64,22 @@ struct Peak {
     int vidx = -1;
 };
 
-struct PassOutput {
-    Image max_snr;
-    std::vector<int> best_v;
-};
+using PassOutput = StackResult;
 
-PassOutput run_pass(const Prepared& p, const std::vector<std::pair<double, double>>& grid,
-                    const std::vector<double>& t, const SearchParams& params, int nt,
-                    const ProgressFn& progress, double f0, double f1, const std::string& stage) {
-    const int w = p.width, h = p.height, n = p.nframes;
-    const int nv = static_cast<int>(grid.size());
-    const int min_count = std::max(3, static_cast<int>(std::ceil(params.min_coverage * n)));
-    std::vector<float> inv_sqrt(static_cast<std::size_t>(n) + 1, 0.0f);
-    for (int c = 1; c <= n; ++c) inv_sqrt[static_cast<std::size_t>(c)] = static_cast<float>(1.0 / std::sqrt(c));
-
-    const float neg = -std::numeric_limits<float>::infinity();
-    std::vector<Image> lmax(static_cast<std::size_t>(nt));
-    std::vector<std::vector<int>> larg(static_cast<std::size_t>(nt));
-    std::atomic<int> done{0};
-    std::atomic<bool> cancel{false};
-
-#pragma omp parallel num_threads(nt)
-    {
-        const int tid = detail::thread_id();
-        Image& M = lmax[static_cast<std::size_t>(tid)];
-        std::vector<int>& A = larg[static_cast<std::size_t>(tid)];
-        M = Image(w, h, neg);
-        A.assign(static_cast<std::size_t>(w) * h, -1);
-        std::vector<float> stack(static_cast<std::size_t>(w) * h);
-        std::vector<int> diff(static_cast<std::size_t>(w + 1) * (h + 1));
-        std::vector<int> colacc(static_cast<std::size_t>(w));
-
-#pragma omp for schedule(dynamic, 2)
-        for (int vi = 0; vi < nv; ++vi) {
-            if (cancel.load(std::memory_order_relaxed)) continue;
-            const double vx = grid[static_cast<std::size_t>(vi)].first;
-            const double vy = grid[static_cast<std::size_t>(vi)].second;
-            std::fill(stack.begin(), stack.end(), 0.0f);
-            std::fill(diff.begin(), diff.end(), 0);
-            for (int i = 0; i < n; ++i) {
-                const int dx = static_cast<int>(std::lround(vx * t[static_cast<std::size_t>(i)]));
-                const int dy = static_cast<int>(std::lround(vy * t[static_cast<std::size_t>(i)]));
-                const int x0 = std::max(0, -dx), x1 = std::min(w, w - dx);
-                const int y0 = std::max(0, -dy), y1 = std::min(h, h - dy);
-                if (x0 >= x1 || y0 >= y1) continue;
-                diff[static_cast<std::size_t>(y0) * (w + 1) + x0] += 1;
-                diff[static_cast<std::size_t>(y0) * (w + 1) + x1] -= 1;
-                diff[static_cast<std::size_t>(y1) * (w + 1) + x0] -= 1;
-                diff[static_cast<std::size_t>(y1) * (w + 1) + x1] += 1;
-                const float* g = p.filtered[static_cast<std::size_t>(i)].data.data();
-                for (int y = y0; y < y1; ++y) {
-                    float* o = &stack[static_cast<std::size_t>(y) * w];
-                    const float* s = g + static_cast<std::ptrdiff_t>(y + dy) * w + dx;
-                    for (int x = x0; x < x1; ++x) o[x] += s[x];
-                }
-            }
-            std::fill(colacc.begin(), colacc.end(), 0);
-            for (int y = 0; y < h; ++y) {
-                int running = 0;
-                const int* drow = &diff[static_cast<std::size_t>(y) * (w + 1)];
-                const float* srow = &stack[static_cast<std::size_t>(y) * w];
-                float* mrow = &M.data[static_cast<std::size_t>(y) * w];
-                int* arow = &A[static_cast<std::size_t>(y) * w];
-                for (int x = 0; x < w; ++x) {
-                    running += drow[x];
-                    const int c = (colacc[static_cast<std::size_t>(x)] += running);
-                    if (c < min_count) continue;
-                    const float snr = srow[x] * inv_sqrt[static_cast<std::size_t>(c)];
-                    if (snr > mrow[x]) {
-                        mrow[x] = snr;
-                        arow[x] = vi;
-                    }
-                }
-            }
-            const int d = ++done;
-            if (tid == 0 && progress && (d % 8 == 0 || d == nv)) {
-                if (!progress(f0 + (f1 - f0) * d / nv, stage)) cancel = true;
-            }
-        }
-    }
-    if (cancel) throw Cancelled();
-
-    PassOutput out;
-    out.max_snr = Image(w, h, neg);
-    out.best_v.assign(static_cast<std::size_t>(w) * h, -1);
-    for (std::size_t k = 0; k < lmax.size(); ++k) {
-        if (lmax[k].empty()) continue;
-        for (std::size_t q = 0; q < out.max_snr.data.size(); ++q) {
-            if (lmax[k].data[q] > out.max_snr.data[q]) {
-                out.max_snr.data[q] = lmax[k].data[q];
-                out.best_v[q] = larg[k][q];
-            }
-        }
-    }
-    for (auto& v : out.max_snr.data)
-        if (!std::isfinite(v)) v = 0.0f;
-    return out;
+// One stacking pass through the selected backend; the backend's own progress
+// (0..1) is mapped onto [f0, f1] of the caller's progress.
+PassOutput run_pass(SearchBackend& backend, const Prepared& p, const std::vector<std::pair<double, double>>& grid,
+                    const std::vector<double>& t, const SearchParams& params, const ProgressFn& progress, double f0,
+                    double f1, const std::string& stage) {
+    StackPass pass;
+    pass.frames = &p.filtered;
+    pass.t_h = &t;
+    pass.velocities = &grid;
+    pass.min_count = std::max(3, static_cast<int>(std::ceil(params.min_coverage * p.nframes)));
+    pass.threads = params.threads;
+    ProgressFn cb;
+    if (progress) cb = [&](double f, const std::string&) { return progress(f0 + (f1 - f0) * f, stage); };
+    return backend.run(pass, cb);
 }
 
 std::vector<Peak> find_peaks(const PassOutput& pass, float floor, int radius, int edge,
@@ -471,6 +392,9 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     double dv = 0.0;
     const auto grid = velocity_grid(p, params, &dv);
     res.n_velocities = grid.size();
+    const std::unique_ptr<SearchBackend> backend = make_backend(params.backend);
+    res.backend = backend->name();
+    res.backend_description = backend->description();
     res.dv_pxh = dv;
     const int nt = detail::thread_count(params.threads);
 
@@ -481,7 +405,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     const int edge = std::max(params.edge_px, 1);
 
     // the real search
-    PassOutput real = run_pass(p, grid, p.t_h, params, nt, progress, 0.0, share, "search");
+    PassOutput real = run_pass(*backend, p, grid, p.t_h, params, progress, 0.0, share, "search");
     const float floor = static_cast<float>(auto_thr ? params.min_snr_floor : params.threshold_snr);
     std::vector<Peak> peaks = find_peaks(real, floor, nms, edge, 100000);
     res.max_snr = std::move(real.max_snr);
@@ -504,7 +428,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
             const std::string stage = "null " + std::to_string(k + 1) + "/" + std::to_string(runs);
             if (progress && !progress(share * (k + 1), stage)) throw Cancelled();
             const Prepared q = detail::with_times(p, t, params);
-            PassOutput null = run_pass(q, grid, t, params, nt, progress, share * (k + 1), share * (k + 2), stage);
+            PassOutput null = run_pass(*backend, q, grid, t, params, progress, share * (k + 1), share * (k + 2), stage);
             for (const auto& pk : find_peaks(null, 3.0f, nms, edge, 20000)) pooled.push_back(pk.snr);
         }
         res.null_peaks.assign(pooled.begin(), pooled.end());

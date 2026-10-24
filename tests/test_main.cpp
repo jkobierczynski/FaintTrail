@@ -19,6 +19,16 @@ namespace fs = std::filesystem;
 
 static int g_failed_checks = 0;
 
+static unsigned long long g_rng = 1;
+static void detail_rng_seed(unsigned long long s) { g_rng = s; }
+static double detail_rng_uniform() {
+    g_rng ^= g_rng << 13; g_rng ^= g_rng >> 7; g_rng ^= g_rng << 17;
+    return (static_cast<double>(g_rng >> 11) + 0.5) * (1.0 / 9007199254740992.0);
+}
+static double detail_rng_normal() {
+    return std::sqrt(-2.0 * std::log(detail_rng_uniform())) * std::cos(6.283185307179586 * detail_rng_uniform());
+}
+
 #define CHECK(cond)                                                                 \
     do {                                                                            \
         if (!(cond)) {                                                              \
@@ -354,6 +364,80 @@ static void test_wcs_transfer() {
     }
 }
 
+
+// The CPU backend must follow the stacking contract exactly: compare it with the
+// naive implementation on awkward inputs (odd sizes, shifts beyond the frame,
+// half-integer shift values, partial coverage, all-equal frames for tie-breaking).
+static void test_backend_contract() {
+    detail_rng_seed(4242);
+    auto make_pass_data = [](int w, int h, int n, std::vector<Image>& frames, std::vector<double>& t,
+                             std::vector<std::pair<double, double>>& vel, bool constant) {
+        frames.assign(static_cast<std::size_t>(n), Image(w, h));
+        t.resize(static_cast<std::size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            t[static_cast<std::size_t>(i)] = (i - (n - 1) / 2.0) * 0.25;  // hours, symmetric, includes x.5 shifts
+            for (auto& v : frames[static_cast<std::size_t>(i)].data) v = constant ? 1.0f : static_cast<float>(detail_rng_normal());
+        }
+        vel.clear();
+        for (int j = -6; j <= 6; ++j)
+            for (int k = -6; k <= 6; ++k) vel.emplace_back(j * 2.0, k * 2.0);  // up to 12 px/h -> shifts up to 9 px
+        vel.emplace_back(400.0, 0.0);  // shifts far outside the frame: never covered enough
+    };
+    for (const bool constant : {false, true}) {
+        std::vector<Image> frames;
+        std::vector<double> t;
+        std::vector<std::pair<double, double>> vel;
+        make_pass_data(37, 23, 7, frames, t, vel, constant);
+        StackPass pass;
+        pass.frames = &frames;
+        pass.t_h = &t;
+        pass.velocities = &vel;
+        pass.min_count = 5;
+        const StackResult ref = run_pass_naive(pass);
+        for (int threads : {1, 2, 3}) {
+            pass.threads = threads;
+            auto be = make_backend("cpu");
+            const StackResult got = be->run(pass);
+            const BackendCheck chk = check_backend(pass, ref, got);
+            if (!chk.ok) std::printf("    cpu (%d threads, constant=%d): %s\n", threads, constant, chk.message.c_str());
+            CHECK(chk.ok);
+            // the CPU reference must agree bit for bit, ties included
+            CHECK(got.best_v == ref.best_v);
+            CHECK(got.max_snr.data == ref.max_snr.data);
+        }
+        if (constant) {
+            // all velocities tie wherever they are fully covered: lowest index wins
+            // pixel (18,11) is covered by all 7 frames even for velocity 0 (shifts up to 9 px)
+            CHECK(ref.best_v[static_cast<std::size_t>(11) * 37 + 18] == 0);
+            CHECK_NEAR(ref.max_snr.at(18, 11), std::sqrt(7.0), 1e-5);
+        }
+    }
+    // the checker itself must notice a wrong result
+    {
+        std::vector<Image> frames;
+        std::vector<double> t;
+        std::vector<std::pair<double, double>> vel;
+        make_pass_data(20, 15, 6, frames, t, vel, false);
+        StackPass pass;
+        pass.frames = &frames;
+        pass.t_h = &t;
+        pass.velocities = &vel;
+        pass.min_count = 4;
+        const StackResult ref = run_pass_naive(pass);
+        StackResult bad = ref;
+        bad.max_snr.data[37] += 0.01f;
+        CHECK(!check_backend(pass, ref, bad).ok);
+        StackResult bad2 = ref;
+        for (auto& v : bad2.best_v)
+            if (v >= 0) { v = (v + 1) % static_cast<int>(vel.size()); break; }
+        CHECK(!check_backend(pass, ref, bad2).ok);
+    }
+    CHECK(!backend_names().empty() && backend_names().back() == "cpu");
+    bool threw = false;
+    try { make_backend("no-such-backend"); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
 static void test_c_api() { CHECK(run_c_api_test() == 0); }
 
 int main() {
@@ -374,6 +458,7 @@ int main() {
         {"csv round trip", test_csv_roundtrip},
         {"cancellation", test_cancellation},
         {"plate-solution transfer", test_wcs_transfer},
+        {"backend contract", test_backend_contract},
         {"C API", test_c_api},
     };
     int failed = 0;

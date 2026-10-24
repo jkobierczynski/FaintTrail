@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fainttrail VERSION 0.1.2 LANGUAGES C CXX
+project(fainttrail VERSION 0.2.0 LANGUAGES C CXX
         DESCRIPTION "Synthetic tracking engine for faint asteroid and comet detection")
 
 set(CMAKE_CXX_STANDARD 17)
@@ -29,6 +29,8 @@ add_library(fainttrail
   src/validate.cpp
   src/io.cpp
   src/astrometry.cpp
+  src/backend.cpp
+  src/backend_cpu.cpp
   src/c_api.cpp)
 add_library(fainttrail::fainttrail ALIAS fainttrail)
 

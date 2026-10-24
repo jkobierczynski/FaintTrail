@@ -6,6 +6,7 @@
 #pragma once
 
 #include "fainttrail/astrometry.hpp"
+#include "fainttrail/backend.hpp"
 #include "fainttrail/fits.hpp"
 #include "fainttrail/io.hpp"
 #include "fainttrail/search.hpp"

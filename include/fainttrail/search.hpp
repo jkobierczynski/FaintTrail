@@ -54,7 +54,9 @@ struct SearchParams {
     double half_tolerance = 3.0;      // allowed shortfall (sigma) of each half
     int max_candidates = 300;
     int edge_px = 4;
-    int threads = 0;                  // 0 = all available
+    int threads = 0;                  // 0 = all available (CPU backend)
+    // Stacking backend: "auto" (best available), "cpu", ... see backend.hpp.
+    std::string backend = "auto";
     std::uint64_t seed = 12345;
 };
 
@@ -120,6 +122,8 @@ struct SearchResult {
     // Motions slower than this move less than two PSF widths during the
     // sequence and are partly absorbed by the static-sky model.
     double slowest_reliable_pxh = 0.0;
+    std::string backend;                // backend that ran the stacking passes
+    std::string backend_description;
     double elapsed_s = 0.0;
     Image max_snr;                      // max over all velocities, per pixel
 };

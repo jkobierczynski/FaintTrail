@@ -124,6 +124,7 @@ private:
     QSpinBox* m_nullRuns = nullptr;
     QDoubleSpinBox* m_threshold = nullptr;
     QSpinBox* m_threads = nullptr;
+    QComboBox* m_backend = nullptr;
     QPushButton* m_searchButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
 

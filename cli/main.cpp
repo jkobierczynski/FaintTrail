@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <memory>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +34,9 @@ commands
   stack FILES|DIR           shift-and-stack along a known motion
   completeness FILES|DIR    injection-recovery test on any data set
   validate                  compare a candidates file with a truth file
+  backends                  list the stacking backends in this build
+  check-backend [--backend NAME]
+                            verify a backend against the stacking contract
   version                   print the version
 
 motion range (search, completeness)
@@ -58,6 +62,8 @@ search options
                             are handled. Gives RA/Dec, rates and position angles.
   --wcs-scale S             frame pixels per pixel of FILE (default: from sizes)
   --threads N               worker threads (default: all cores)
+  --backend NAME            stacking backend: auto (default) or one of
+                            'fainttrail backends' 
   --all                     also print flagged candidates
   --quiet                   no progress output
 
@@ -186,6 +192,7 @@ SearchParams search_params(const Args& a, const std::vector<Frame>& frames) {
     p.mask_scatter = a.num("--mask-scatter", p.mask_scatter);
     p.weight_scatter = a.num("--weight-scatter", p.weight_scatter);
     p.threads = a.integer("--threads", p.threads);
+    p.backend = a.str("--backend", p.backend);
     p.seed = static_cast<std::uint64_t>(a.num("--seed", static_cast<double>(p.seed)));
     return p;
 }
@@ -381,6 +388,59 @@ int cmd_completeness(const Args& a) {
     return 0;
 }
 
+// Conformance check of a stacking backend against the contract in backend.hpp:
+// first against the naive implementation on a small pass, then against the CPU
+// reference on a realistic simulated sequence.
+int cmd_check_backend(const Args& a) {
+    const std::string name = a.str("--backend", "auto");
+    auto cand = make_backend(name);
+    std::printf("checking backend '%s' (%s)\n", cand->name().c_str(), cand->description().c_str());
+    bool all_ok = true;
+    auto report = [&](const char* what, const BackendCheck& c, double secs_ref, double secs_cand) {
+        std::printf("  %-34s %s  max |dS/N| %.2e, best-v differences %zu (%zu unexplained)  [%.2f s vs %.2f s]\n", what,
+                    c.ok ? "PASS" : "FAIL", c.max_abs_diff, c.best_v_mismatch, c.best_v_unexplained, secs_ref, secs_cand);
+        if (!c.ok) {
+            std::printf("    %s\n", c.message.c_str());
+            all_ok = false;
+        }
+    };
+    auto timed = [](auto&& fn) {
+        const auto t0 = std::chrono::steady_clock::now();
+        auto r = fn();
+        return std::make_pair(std::move(r), std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    };
+    for (int round = 0; round < 2; ++round) {
+        SimParams sp;
+        sp.width = round == 0 ? 72 : 384;
+        sp.height = round == 0 ? 52 : 320;
+        sp.nframes = round == 0 ? 12 : 40;
+        sp.nstars = round == 0 ? 20 : 400;
+        sp.seed = 77 + static_cast<std::uint64_t>(round);
+        const SimResult sim = simulate(sp);
+        SearchParams p;
+        p.vmin_pxh = 2;
+        p.vmax_pxh = round == 0 ? 20 : 45;
+        const Prepared prep = prepare(sim.frames, p);
+        const auto grid = velocity_grid(prep, p);
+        StackPass pass;
+        pass.frames = &prep.filtered;
+        pass.t_h = &prep.t_h;
+        pass.velocities = &grid;
+        pass.min_count = std::max(3, static_cast<int>(std::ceil(p.min_coverage * prep.nframes)));
+        auto [got, tc] = timed([&] { return cand->run(pass); });
+        if (round == 0) {
+            auto [ref, tr] = timed([&] { return run_pass_naive(pass); });
+            report("vs naive contract (72x52, 12 fr)", check_backend(pass, ref, got), tr, tc);
+        } else {
+            auto cpu = make_backend("cpu");
+            auto [ref, tr] = timed([&] { return cpu->run(pass); });
+            report("vs CPU reference (384x320, 40 fr)", check_backend(pass, ref, got), tr, tc);
+        }
+    }
+    std::printf("%s\n", all_ok ? "backend conforms to the stacking contract" : "backend does NOT conform");
+    return all_ok ? 0 : 3;
+}
+
 int cmd_validate(const Args& a) {
     const std::string tpath = a.str("--truth"), cpath = a.str("--candidates", "candidates.csv");
     if (tpath.empty()) throw std::runtime_error("validate needs --truth FILE");
@@ -419,6 +479,13 @@ int main(int argc, char** argv) {
             std::fputs(kUsage, stdout);
             return 0;
         }
+        if (cmd == "backends") {
+            for (const auto& n : backend_names()) {
+                const auto b = make_backend(n);
+                std::printf("%-8s %s\n", n.c_str(), b->description().c_str());
+            }
+            return 0;
+        }
         if (cmd == "version" || cmd == "--version") {
             std::printf("FaintTrail %s\nCopyright (C) 2026 Jurgen Kobierczynski\nLicense GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law.\n", version());
             return 0;
@@ -434,6 +501,7 @@ int main(int argc, char** argv) {
         if (cmd == "stack") return cmd_stack(a);
         if (cmd == "completeness") return cmd_completeness(a);
         if (cmd == "validate") return cmd_validate(a);
+        if (cmd == "check-backend") return cmd_check_backend(a);
         std::fprintf(stderr, "unknown command '%s'\n\n%s", cmd.c_str(), kUsage);
         return 1;
     } catch (const Cancelled&) {

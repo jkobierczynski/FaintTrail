@@ -169,6 +169,15 @@ void MainWindow::buildUi() {
     df->addRow(tr("Fixed threshold"), m_threshold);
     df->addRow(tr("PSF FWHM"), m_fwhm);
     df->addRow(tr("Threads"), m_threads);
+    m_backend = new QComboBox;
+    m_backend->addItem(tr("auto"), QString("auto"));
+    for (const auto& n : backend_names()) {
+        const QString q = QString::fromStdString(n);
+        m_backend->addItem(q, q);
+        m_backend->setItemData(m_backend->count() - 1, QString::fromStdString(make_backend(n)->description()), Qt::ToolTipRole);
+    }
+    m_backend->setToolTip(tr("Implementation of the stacking loop"));
+    df->addRow(tr("Backend"), m_backend);
     pl->addWidget(det);
 
     auto* runRow = new QHBoxLayout;
@@ -507,6 +516,7 @@ SearchParams MainWindow::currentParams() const {
     p.threshold_snr = m_threshold->value();
     p.fwhm_px = m_fwhm->value();
     p.threads = m_threads->value();
+    p.backend = m_backend->currentData().toString().toStdString();
     return p;
 }
 
@@ -586,7 +596,7 @@ void MainWindow::searchFinished() {
     const int cut = s.indexOf("<hr>");
     if (cut >= 0) s = s.left(cut);
     s += tr("<hr><b>Search</b><br>%1 trial motions, grid step %2 px/h<br>PSF FWHM %3 px<br>"
-            "threshold S/N <b>%4</b> (%5)<br>slowest reliable motion %6 px/h<br>"
+            "threshold S/N <b>%4</b> (%5)<br>slowest reliable motion %6 px/h<br>backend %9<br>"
             "<b>%7 passed</b>, %8 flagged")
              .arg(r.n_velocities)
              .arg(r.dv_pxh, 0, 'f', 2)
@@ -595,7 +605,8 @@ void MainWindow::searchFinished() {
              .arg(QString::fromStdString(r.threshold_method))
              .arg(r.slowest_reliable_pxh, 0, 'f', 1)
              .arg(ok)
-             .arg(r.candidates.size() - ok);
+             .arg(r.candidates.size() - ok)
+             .arg(QString::fromStdString(r.backend).toHtmlEscaped());
     if (!m_truth.empty()) {
         std::vector<SimMover> movers;
         for (const auto& t : m_truth) movers.push_back(t.mover);

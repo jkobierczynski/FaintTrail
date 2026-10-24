@@ -50,6 +50,8 @@ fainttrail::SearchParams to_cpp(const ft_params& p) {
     s.edge_px = p.edge_px;
     s.threads = p.threads;
     s.seed = p.seed;
+    s.backend = std::string(p.backend, strnlen(p.backend, sizeof p.backend));
+    if (s.backend.empty()) s.backend = "auto";
     return s;
 }
 
@@ -82,6 +84,8 @@ void ft_params_default(ft_params* p) {
     p->edge_px = s.edge_px;
     p->threads = s.threads;
     p->seed = s.seed;
+    std::memset(p->backend, 0, sizeof p->backend);
+    std::strncpy(p->backend, s.backend.c_str(), sizeof p->backend - 1);
 }
 
 ft_context* ft_create(void) {

@@ -50,6 +50,7 @@ typedef struct ft_params {
     int edge_px;
     int threads;                  /* 0 = all cores                                */
     unsigned long long seed;
+    char backend[16];             /* "auto" (default), "cpu", ...                  */
 } ft_params;
 
 typedef struct ft_candidate {

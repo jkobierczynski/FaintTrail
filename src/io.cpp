@@ -197,6 +197,7 @@ std::string summary_text(const SearchResult& res, bool ok_only) {
     s << "slowest reliable    : " << res.slowest_reliable_pxh << " px/h (2 FWHM over the sequence)\n";
     s << "threshold           : S/N " << res.threshold_snr << " (" << res.threshold_method << ")\n";
     s << "candidates          : " << nok << " passed, " << res.candidates.size() - nok << " flagged\n";
+    if (!res.backend.empty()) s << "backend             : " << res.backend_description << "\n";
     s << "elapsed             : " << std::setprecision(1) << res.elapsed_s << " s\n";
     char line[256];
     std::snprintf(line, sizeof line, "\n %3s %2s %8s %8s %8s %8s %6s %6s %6s %5s %8s  %s\n", "id", "ok", "x", "y",

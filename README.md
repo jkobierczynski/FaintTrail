@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.1.2, CPU reference implementation, validated on synthetic data and a first real sequence.**
+> Status: **0.2.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and two real sequences.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -156,6 +156,13 @@ Pixel coordinates are 0-based in the C++ API and FITS 1-based in files and the C
 See [docs/ALGORITHM.md](docs/ALGORITHM.md): static-sky subtraction with a leave-out
 median, matched filtering, the shift-and-stack grid search, the time-shuffled null
 calibration, refinement and the consistency tests.
+
+## Backends
+
+The stacking loop runs behind an interchangeable backend interface with an exact,
+testable contract; the CPU (OpenMP) backend is the reference. See
+[docs/BACKENDS.md](docs/BACKENDS.md) for the contract and how to add, for example,
+a CUDA backend.
 
 ## Validation
 
