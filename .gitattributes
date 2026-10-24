@@ -1,2 +1,3 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+*.fits binary
+*.fit binary
+tests/regression/baselines/*.csv text eol=lf

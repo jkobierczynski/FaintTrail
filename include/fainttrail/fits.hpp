@@ -46,7 +46,11 @@ FitsImage read_fits(const std::string& path);
 
 // Write a float image as BITPIX = -32. Structural keywords are generated;
 // any SIMPLE/BITPIX/NAXIS* cards in `header` are ignored.
-void write_fits(const std::string& path, const Image& image, const FitsHeader& header = {});
+// bitpix -32 writes IEEE floats (exact). bitpix 16 writes scaled 16-bit integers
+// (BSCALE/BZERO chosen per image so that the quantisation step is at most a
+// quarter of the robust noise; NaN becomes BLANK; values above the range are
+// clipped). 16-bit files are half the size and are used for test fixtures.
+void write_fits(const std::string& path, const Image& image, const FitsHeader& header = {}, int bitpix = -32);
 
 // TAN plate solution from a header (CD, PC+CDELT or CDELT+CROTA2); invalid if absent.
 Wcs wcs_from_header(const FitsHeader& h);
@@ -62,7 +66,12 @@ std::vector<Frame> load_frames(const std::vector<std::string>& paths);
 
 // Write a frame back out with its time and WCS keywords.
 void write_frame(const std::string& path, const Frame& frame,
-                 const FitsHeader& extra = {});
+                 const FitsHeader& extra = {}, int bitpix = -32);
+
+// Cut a rectangle (0-based x0, y0, size w x h) out of a frame. The WCS reference
+// pixel and the registration offsets REGDX/REGDY are adjusted so that sky and
+// detector coordinates stay the same. Throws if the rectangle leaves the image.
+Frame crop_frame(const Frame& frame, int x0, int y0, int w, int h);
 
 // Calendar helpers (UTC, proleptic Gregorian).
 double mjd_from_iso(const std::string& iso);  // "2026-10-24T01:02:03.4"

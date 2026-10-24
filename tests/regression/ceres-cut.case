@@ -1,0 +1,20 @@
+# Null case on real noise. Ceres field, 2014-05-16: 11 unguided 30 s frames over
+# 5.3 min, ATIK 314L, unbinned. Registered with
+#   tools/register_sequence.py RAW -o ceres --min-exptime 20
+# and cropped around (1) Ceres, which is saturated and moves less than one pixel:
+#   fainttrail crop ceres -o data/ceres-cut --x0 202 --y0 577 --w 256 --h 256 --bitpix 16
+# Searched for fast motions (60-600 px/h), where the sequence is long enough.
+# Nothing in the crop moves at those rates, so nothing may pass.
+name        = ceres-cut
+description = no detections allowed: 256x256 crop around saturated Ceres, fast motions
+data        = data/ceres-cut
+baseline    = baselines/ceres-cut.csv
+
+[search]
+vmin = 60
+vmax = 600
+
+[expect]
+max_unexpected = 0
+threshold_min  = 5.5
+threshold_max  = 8.5

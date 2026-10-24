@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fainttrail VERSION 0.2.0 LANGUAGES C CXX
+project(fainttrail VERSION 0.3.0 LANGUAGES C CXX
         DESCRIPTION "Synthetic tracking engine for faint asteroid and comet detection")
 
 set(CMAKE_CXX_STANDARD 17)
@@ -29,6 +29,7 @@ add_library(fainttrail
   src/validate.cpp
   src/io.cpp
   src/astrometry.cpp
+  src/regression.cpp
   src/backend.cpp
   src/backend_cpu.cpp
   src/c_api.cpp)
@@ -87,6 +88,17 @@ if(FAINTTRAIL_BUILD_TESTS)
   target_link_libraries(fainttrail_tests PRIVATE fainttrail)
   add_test(NAME fainttrail_tests COMMAND fainttrail_tests)
   set_tests_properties(fainttrail_tests PROPERTIES TIMEOUT 600)
+  # Real-data regression cases: small fixtures in the repository run everywhere;
+  # full-frame cases are skipped (exit code 77) unless FAINTTRAIL_REGRESSION_DATA
+  # points at the full data sets.
+  if(FAINTTRAIL_BUILD_CLI)
+    file(GLOB FAINTTRAIL_REGRESSION_CASES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/regression/*.case)
+    foreach(case_file ${FAINTTRAIL_REGRESSION_CASES})
+      get_filename_component(case_name ${case_file} NAME_WE)
+      add_test(NAME regress_${case_name} COMMAND fainttrail_cli regress ${case_file} --strict --quiet)
+      set_tests_properties(regress_${case_name} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 3600 LABELS regression)
+    endforeach()
+  endif()
 endif()
 
 # ---------------------------------------------------------------- tools

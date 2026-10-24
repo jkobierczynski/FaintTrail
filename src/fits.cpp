@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -319,12 +320,43 @@ FitsImage read_fits(const std::string& path) {
 }
 
 // ------------------------------------------------------------------ write
-void write_fits(const std::string& path, const Image& image, const FitsHeader& header) {
+void write_fits(const std::string& path, const Image& image, const FitsHeader& header, int bitpix) {
+    if (bitpix != -32 && bitpix != 16) throw std::runtime_error("write_fits: only BITPIX -32 and 16 are supported");
     std::ofstream out(path, std::ios::binary);
     if (!out) throw std::runtime_error("cannot create FITS file: " + path);
     std::string hdr;
     hdr += format_card("SIMPLE", std::string(19, ' ') + "T", "conforms to FITS standard");
-    hdr += format_card("BITPIX", std::string(17, ' ') + "-32", "IEEE single precision");
+    // 16-bit scaling: robust noise from a subsample, step <= noise / 4
+    double bscale = 1.0, bzero = 0.0;
+    if (bitpix == 16) {
+        std::vector<float> v;
+        float lo = std::numeric_limits<float>::infinity(), hi = -lo;
+        const std::size_t step = std::max<std::size_t>(1, image.size() / 200000);
+        for (std::size_t i = 0; i < image.size(); ++i) {
+            const float x = image.data[i];
+            if (!std::isfinite(x)) continue;
+            lo = std::min(lo, x);
+            hi = std::max(hi, x);
+            if (i % step == 0) v.push_back(x);
+        }
+        if (v.empty()) {
+            lo = 0.0f;
+            hi = 1.0f;
+            v.push_back(0.0f);
+        }
+        auto mid = v.begin() + static_cast<std::ptrdiff_t>(v.size() / 2);
+        std::nth_element(v.begin(), mid, v.end());
+        const double med = *mid;
+        for (auto& x : v) x = std::fabs(x - static_cast<float>(med));
+        std::nth_element(v.begin(), mid, v.end());
+        const double sigma = 1.4826 * *mid;
+        bscale = (static_cast<double>(hi) - lo) / 65530.0;
+        if (sigma > 0.0) bscale = std::min(bscale, sigma / 4.0);
+        if (!(bscale > 0.0)) bscale = 1.0;
+        bzero = lo + 32767.0 * bscale;  // lowest value maps to -32767; -32768 is BLANK
+    }
+    hdr += format_card("BITPIX", std::string(bitpix == 16 ? 18 : 17, ' ') + std::to_string(bitpix),
+                       bitpix == 16 ? "16-bit scaled integers" : "IEEE single precision");
     hdr += format_card("NAXIS", std::string(19, ' ') + "2", "");
     {
         std::string s = std::to_string(image.width);
@@ -349,9 +381,32 @@ void write_fits(const std::string& path, const Image& image, const FitsHeader& h
             hdr += format_card(c.key, c.is_string ? format_string(c.value) : c.value, c.comment);
         }
     }
+    if (bitpix == 16) {
+        char b[32];
+        std::snprintf(b, sizeof b, "%20.12E", bscale);
+        hdr += format_card("BSCALE", b, "physical = BZERO + BSCALE * stored");
+        std::snprintf(b, sizeof b, "%20.12E", bzero);
+        hdr += format_card("BZERO", b, "");
+        hdr += format_card("BLANK", std::string(14, ' ') + "-32768", "undefined pixels");
+    }
     hdr += std::string("END") + std::string(kCard - 3, ' ');
     hdr.resize((hdr.size() + kBlock - 1) / kBlock * kBlock, ' ');
     out.write(hdr.data(), static_cast<std::streamsize>(hdr.size()));
+    if (bitpix == 16) {
+        std::vector<unsigned char> buf(image.size() * 2);
+        for (std::size_t i = 0; i < image.size(); ++i) {
+            const float x = image.data[i];
+            long q = -32768;
+            if (std::isfinite(x)) q = std::clamp(std::lround((x - bzero) / bscale), -32767L, 32767L);
+            const auto u = static_cast<std::uint16_t>(static_cast<std::int16_t>(q));
+            buf[i * 2 + 0] = static_cast<unsigned char>(u >> 8);
+            buf[i * 2 + 1] = static_cast<unsigned char>(u);
+        }
+        buf.resize((buf.size() + kBlock - 1) / kBlock * kBlock, 0);
+        out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+        if (!out) throw std::runtime_error("failed writing FITS file: " + path);
+        return;
+    }
 
     std::vector<unsigned char> buf(image.size() * 4);
     for (std::size_t i = 0; i < image.size(); ++i) {
@@ -496,7 +551,7 @@ std::vector<Frame> load_frames(const std::vector<std::string>& paths) {
     return frames;
 }
 
-void write_frame(const std::string& path, const Frame& frame, const FitsHeader& extra) {
+void write_frame(const std::string& path, const Frame& frame, const FitsHeader& extra, int bitpix) {
     FitsHeader h;
     h.set("DATE-OBS", iso_from_mjd(frame.mjd_mid - frame.exptime_s / 172800.0, 3),
           "UTC start of exposure");
@@ -523,7 +578,28 @@ void write_frame(const std::string& path, const Frame& frame, const FitsHeader& 
         if (c.key == "HISTORY" || c.key == "COMMENT") h.cards.push_back(c);
         else upsert(h, c);
     }
-    write_fits(path, frame.image, h);
+    write_fits(path, frame.image, h, bitpix);
+}
+
+Frame crop_frame(const Frame& frame, int x0, int y0, int w, int h) {
+    const Image& src = frame.image;
+    if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0 || x0 + w > src.width || y0 + h > src.height)
+        throw std::runtime_error("crop rectangle " + std::to_string(w) + "x" + std::to_string(h) + "+" +
+                                 std::to_string(x0) + "+" + std::to_string(y0) + " leaves the " +
+                                 std::to_string(src.width) + "x" + std::to_string(src.height) + " image");
+    Frame out = frame;
+    out.image = Image(w, h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) out.image.at(x, y) = src.at(x0 + x, y0 + y);
+    if (out.wcs.valid) {
+        out.wcs.crpix1 -= x0;
+        out.wcs.crpix2 -= y0;
+    }
+    if (out.has_reg_offset) {  // detector = registered + reg; registered = cropped + x0
+        out.reg_dx += x0;
+        out.reg_dy += y0;
+    }
+    return out;
 }
 
 }  // namespace fainttrail

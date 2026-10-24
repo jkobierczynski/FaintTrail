@@ -87,11 +87,21 @@ otherwise look like a stationary chunk of the sequence.
   osculating elements (epoch 2026) to the observing time with the Sun, planets and
   Moon as perturbers. Predicted motion: 25.9"/h at 30.0° from the RA direction
   (dRA·cosδ +22.5"/h, dDec −13.0"/h), position 15h39m54s −6°37′. The candidate moves
-  at 31.4° from the image x axis, which is the RA direction for this mount: the
-  directions agree within 1.5°. The rate implies an image scale of 1.52"/px,
-  consistent with the 750 mm f/5 telescope used with a focal-reducing corrector.
+  at 31.4° from the image x axis, which is within about 2° of the RA direction for
+  this mount. The rate implies an image scale of about 1.5"/px unbinned (the plate
+  solution below gives 1.48"/px), consistent with the 750 mm f/5 telescope used with
+  a focal-reducing corrector.
   The observer confirmed that the candidate is the asteroid he identified in these
   frames in 2013.
+* **Astrometry.** The observer located the field in Stellarium (near Gaia DR3
+  4397116122405109760). With that centre, `tools/solve_from_catalog.py` solved the
+  stack against 72 Gaia DR3 stars (67 used, 0.41" rms, 2.967"/px), and
+  `--wcs-from` tied the frames to it (152 stars, 0.26 px rms). Candidate at
+  2013-08-01 21:28:06 UTC: RA 15h39m54.39s, Dec −6°37′09.9″, motion 27.0"/h at
+  position angle 125.7°. The ephemeris (n-body integration of the JPL orbit,
+  topocentric for the observing site) gives 15h39m54.40s −6°37′08.7″, 25.9"/h at
+  120.0°: the position agrees within 1.1″, the motion within its uncertainty
+  (about 2"/h per axis).
 * **Artefacts found and fixed.** The first runs passed (a) tracks along the moving
   blank border of the registered frames and (b) a warm pixel, which the
   registration turns into an object that moves with the mount's drift. FaintTrail
@@ -130,6 +140,32 @@ detections, and injection-recovery on its real noise reached 50 % completeness a
 S/N 10.6 for fast motions (200–600 px/h). It also showed that objects moving only
 2–7 PSF widths over a short sequence lose much of their signal to the static-sky
 model; that limitation is still open.
+
+## Real-data regression suite
+
+The three real sequences above are now a regression suite
+([tests/regression](../tests/regression/README.md)), run with `fainttrail regress`.
+Each case states what must be found (known objects, with position, motion and
+sky position: the MPChecker position for 1999 XP31, the ephemeris for Mariekebaan), what may not appear (no other passing
+candidates), the allowed threshold range, and a baseline of the full candidate
+list. Small 16-bit crops (6 MB) run with every `ctest`; the full frames run when
+`FAINTTRAIL_REGRESSION_DATA` points at them. Frames were registered from the raw
+captures with `tools/register_sequence.py`.
+
+| case | frames | motions | threshold | passed | result | search time (2 cores) |
+|---|---|---:|---:|---:|---|---:|
+| mariekebaan-cut | 82 × 128 × 128 | 724 | 8.11 | 1 | Mariekebaan, S/N 10.9, 0.6″ from the ephemeris | 2 s |
+| leo-triplet-cut | 20 × 200 × 160 | 3160 | 11.18 | 1 | 1999 XP31, S/N 15.5, 2.8″ from MPChecker; edge artefact rejected | 3 s |
+| ceres-cut | 11 × 256 × 256 | 2300 | 6.81 | 0 | nothing passes | 3 s |
+| mariekebaan-full | 82 × 695 × 519 | 724 | 7.44 | 1 | Mariekebaan, S/N 9.95, 1.1″ from the ephemeris; 50 edge/detector artefacts rejected | 26 s |
+| leo-triplet-full | 20 × 2328 × 1760 | 3160 | 11.15 | 1 | 1999 XP31, S/N 15.6, 3.0″ from MPChecker | 362 s |
+| ceres-full | 11 × 1391 × 1039 | 2300 | 6.90 | 0 | nothing passes | 43 s |
+
+The 16-bit crops give exactly the same candidates as floating-point crops. The
+suite was checked against deliberate faults: letting `half`, `single` and `edge`
+flags through fails `leo-triplet-cut` (the edge artefact passes); scaling the stack
+S/N by 3 % leaves every truth check green but moves all three thresholds by 3 %,
+which the baselines report (and fail in strict mode).
 
 ## Reproducing
 

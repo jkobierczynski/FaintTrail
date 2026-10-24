@@ -35,6 +35,10 @@ commands
   completeness FILES|DIR    injection-recovery test on any data set
   validate                  compare a candidates file with a truth file
   backends                  list the stacking backends in this build
+  crop FRAMES... -o DIR --x0 X --y0 Y --w W --h H [--bitpix 16] [--wcs-from F]
+                            cut the same rectangle out of every frame
+  regress CASES...          run real-data regression cases (.case files or dirs)
+          [--backend NAME] [--strict] [--write-baseline] [--report FILE.csv]
   check-backend [--backend NAME]
                             verify a backend against the stacking contract
   version                   print the version
@@ -106,7 +110,7 @@ struct Args {
     int integer(const std::string& k, int d) const { return static_cast<int>(std::lround(num(k, d))); }
 };
 
-const std::vector<std::string> kFlags = {"--all", "--quiet", "--help", "-h"};
+const std::vector<std::string> kFlags = {"--all", "--quiet", "--help", "-h", "--strict", "--write-baseline"};
 
 Args parse(int argc, char** argv, int start) {
     Args a;
@@ -441,6 +445,96 @@ int cmd_check_backend(const Args& a) {
     return all_ok ? 0 : 3;
 }
 
+// Cut the same rectangle out of every frame of a registered sequence, keeping
+// times, WCS and registration offsets consistent. Used to make test fixtures.
+int cmd_crop(const Args& a) {
+    const std::string dir = a.str("-o", a.str("--out"));
+    if (dir.empty()) throw std::runtime_error("crop needs -o DIR");
+    if (!a.flag("--x0") || !a.flag("--y0") || !a.flag("--w") || !a.flag("--h"))
+        throw std::runtime_error("crop needs --x0 --y0 --w --h (0-based pixels)");
+    const int bitpix = a.integer("--bitpix", -32);
+    const auto frames = load_inputs(a);
+    fs::create_directories(dir);
+    const auto files = expand_inputs(a.positional);
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const Frame f = crop_frame(frames[i], a.integer("--x0", 0), a.integer("--y0", 0), a.integer("--w", 0),
+                                   a.integer("--h", 0));
+        FitsHeader extra;
+        extra.add_history("fainttrail crop of " + fs::path(files[i]).filename().string() + " at x0=" +
+                          a.str("--x0") + " y0=" + a.str("--y0"));
+        write_frame((fs::path(dir) / fs::path(files[i]).filename()).string(), f, extra, bitpix);
+    }
+    std::printf("wrote %zu cropped frames to %s\n", frames.size(), dir.c_str());
+    return 0;
+}
+
+// Run real-data regression cases (see regression.hpp and tests/regression/).
+int cmd_regress(const Args& a) {
+    std::vector<std::string> cases;
+    for (const auto& p : a.positional) {
+        if (fs::is_directory(p)) {
+            std::vector<std::string> v;
+            for (const auto& e : fs::directory_iterator(p))
+                if (e.path().extension() == ".case") v.push_back(e.path().string());
+            std::sort(v.begin(), v.end());
+            cases.insert(cases.end(), v.begin(), v.end());
+        } else {
+            cases.push_back(p);
+        }
+    }
+    if (cases.empty()) throw std::runtime_error("regress needs one or more .case files or directories");
+    RegressionOptions opt;
+    opt.backend = a.str("--backend");
+    opt.threads = a.integer("--threads", 0);
+    opt.strict = a.flag("--strict");
+    const bool write_base = a.flag("--write-baseline");
+    std::FILE* report = nullptr;
+    if (a.flag("--report")) {
+        report = std::fopen(a.str("--report").c_str(), "w");
+        if (!report) throw std::runtime_error("cannot write " + a.str("--report"));
+        std::fprintf(report, "case,status,backend,frames,width,height,velocities,threshold,passed,candidates,load_s,prepare_s,search_s\n");
+    }
+    int n_fail = 0, n_changed = 0, n_skip = 0, n_pass = 0;
+    for (const auto& path : cases) {
+        const RegressionCase c = load_regression_case(path);
+        std::printf("== %s%s%s\n", c.name.c_str(), c.description.empty() ? "" : ": ", c.description.c_str());
+        const RegressionOutcome o = run_regression_case(c, opt, make_progress(a.flag("--quiet")));
+        if (o.status == RegressionStatus::Skipped) {
+            std::printf("   SKIP  %s\n\n", o.skip_reason.c_str());
+            ++n_skip;
+            continue;
+        }
+        int passed = 0;
+        for (const auto& cd : o.result.candidates) passed += cd.ok;
+        std::printf("   %zu frames %dx%d, backend %s, %zu motions, threshold %.2f, %d passed / %zu candidates\n",
+                    o.nframes, o.width, o.height, o.result.backend.c_str(), o.result.n_velocities,
+                    o.result.threshold_snr, passed, o.result.candidates.size());
+        std::printf("   time: load %.1f s, prepare %.1f s, search %.1f s\n", o.load_s, o.prepare_s, o.search_s);
+        for (const auto& ch : o.checks)
+            std::printf("   %-7s %s\n", ch.ok ? "ok" : (ch.hard || opt.strict ? "FAIL" : "changed"), ch.text.c_str());
+        if (write_base && !c.baseline_path.empty()) {
+            write_regression_baseline(c.baseline_path, c, o);
+            std::printf("   wrote baseline %s\n", c.baseline_path.c_str());
+        }
+        std::printf("   => %s\n\n", status_name(o.status));
+        if (report)
+            std::fprintf(report, "%s,%s,%s,%zu,%d,%d,%zu,%.3f,%d,%zu,%.2f,%.2f,%.2f\n", c.name.c_str(),
+                         status_name(o.status), o.result.backend.c_str(), o.nframes, o.width, o.height,
+                         o.result.n_velocities, o.result.threshold_snr, passed, o.result.candidates.size(), o.load_s,
+                         o.prepare_s, o.search_s);
+        switch (o.status) {
+            case RegressionStatus::Fail: ++n_fail; break;
+            case RegressionStatus::Changed: ++n_changed; break;
+            default: ++n_pass; break;
+        }
+    }
+    if (report) std::fclose(report);
+    std::printf("regression: %d passed, %d changed, %d failed, %d skipped\n", n_pass, n_changed, n_fail, n_skip);
+    if (n_fail > 0) return 3;
+    if (n_pass + n_changed == 0 && n_skip > 0) return 77;  // everything skipped (ctest SKIP_RETURN_CODE)
+    return 0;
+}
+
 int cmd_validate(const Args& a) {
     const std::string tpath = a.str("--truth"), cpath = a.str("--candidates", "candidates.csv");
     if (tpath.empty()) throw std::runtime_error("validate needs --truth FILE");
@@ -502,6 +596,8 @@ int main(int argc, char** argv) {
         if (cmd == "completeness") return cmd_completeness(a);
         if (cmd == "validate") return cmd_validate(a);
         if (cmd == "check-backend") return cmd_check_backend(a);
+        if (cmd == "crop") return cmd_crop(a);
+        if (cmd == "regress") return cmd_regress(a);
         std::fprintf(stderr, "unknown command '%s'\n\n%s", cmd.c_str(), kUsage);
         return 1;
     } catch (const Cancelled&) {

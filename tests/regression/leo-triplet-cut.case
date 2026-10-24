@@ -1,0 +1,30 @@
+# Leo Triplet, 2016-11-30: 20 guided 240 s frames, ZWO ASI1600MM, no darks or flats.
+# Registered with
+#   tools/register_sequence.py RAW/m65-light_Light_0*.fits -o leo-triplet --bin 2 --min-exptime 60
+# and cropped, with the plate solution of the observer's ASTAP-solved stack, by
+#   fainttrail crop leo-triplet --wcs-from stack-solved.fits -o data/leo-triplet-cut \
+#       --x0 0 --y0 140 --w 200 --h 160 --bitpix 16
+# The crop touches the left image border, where two edge artefacts must be rejected.
+name        = leo-triplet-cut
+description = (21996) 1999 XP31, 200x160 crop of 20 binned frames, with WCS
+data        = data/leo-triplet-cut
+baseline    = baselines/leo-triplet-cut.csv
+
+[expect]
+max_unexpected = 0
+threshold_min  = 9.5
+threshold_max  = 13.0
+
+[object (21996) 1999 XP31]
+source  = MPChecker (geocentric) position 11 18 26.6 +13 45 01 at 2016-11-30 03:52:23 UTC
+mjd     = 57722.16137731
+x       = 165.23
+y       = 78.35
+vx      = 1.07
+vy      = 19.79
+pos_tol = 1.0
+vel_tol = 2.0
+min_snr = 13.0
+ra      = 169.610833
+dec     = 13.750278
+sky_tol = 5.0

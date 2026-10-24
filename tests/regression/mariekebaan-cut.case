@@ -1,0 +1,33 @@
+# (12631) Mariekebaan, 2013-08-01: 82 unguided 30 s frames, ATIK 314L on a 750 mm f/5
+# Newtonian with corrector, no darks or flats. Registered with
+#   tools/register_sequence.py RAW -o mariekebaan --bin 2 --exclude 'mariekebaan_008.fit'
+# (17 repeated frames at the end are dropped automatically), plate-solved against
+# Gaia DR3 with the field centre found by the observer in Stellarium:
+#   tools/solve_from_catalog.py mariekebaan mariekebaan-gaia.tsv --ra 234.98417 \
+#       --dec -6.61786 --scale 3.0 -o mariekebaan-stack-solved.fits
+# (67 stars, 0.41" rms, 2.967"/px) and cropped with
+#   fainttrail crop mariekebaan --wcs-from mariekebaan-stack-solved.fits \
+#       -o data/mariekebaan-cut --x0 270 --y0 244 --w 128 --h 128 --bitpix 16
+name        = mariekebaan-cut
+description = (12631) Mariekebaan, 128x128 crop of 82 binned frames, with WCS
+data        = data/mariekebaan-cut
+baseline    = baselines/mariekebaan-cut.csv
+
+[expect]
+max_unexpected = 0
+threshold_min  = 7.0
+threshold_max  = 9.5
+
+[object (12631) Mariekebaan]
+source  = ephemeris: n-body integration of the JPL SBDB orbit, topocentric for the observing site (15 39 54.40 -06 37 08.7); confirmed by the observer
+mjd     = 56505.89451396
+x       = 63.63
+y       = 63.68
+vx      = -7.59
+vy      = -5.04
+pos_tol = 1.0
+vel_tol = 2.0
+min_snr = 8.5
+ra      = 234.976680
+dec     = -6.619097
+sky_tol = 3.0

@@ -43,8 +43,10 @@ motions' S/N values are within that same tolerance. `check_backend()` and the
    before `"cpu"` so that `auto` prefers it, and only when a usable device is present.
 3. Run `fainttrail check-backend --backend <name>` and `ctest`; add the backend to
    the conformance loop in `tests/test_main.cpp`.
-4. Run the real-data regression cases (see VALIDATION.md): the reported
-   candidates must match the CPU backend's.
+4. Run the real-data regression cases with the new backend:
+   `fainttrail regress tests/regression --backend <name> --strict`. The candidates,
+   verdicts and thresholds must match the CPU baselines (see
+   [tests/regression/README.md](../tests/regression/README.md)).
 
 Progress is reported as the fraction of motions processed; returning `false`
 from the callback must stop the pass promptly, after which `run()` throws

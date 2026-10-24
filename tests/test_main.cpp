@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <vector>
@@ -438,6 +439,95 @@ static void test_backend_contract() {
     CHECK(threw);
 }
 
+// 16-bit fixture files and cropping: quantisation well below the noise, NaN kept,
+// WCS and registration offsets consistent after the crop.
+static void test_crop_and_int16() {
+    detail_rng_seed(5);
+    Frame f;
+    f.image = Image(64, 48);
+    for (auto& v : f.image.data) v = 1000.0f + 10.0f * static_cast<float>(detail_rng_normal());
+    f.image.at(40, 30) = 60000.0f;  // saturated star: may be clipped, nothing else
+    f.image.at(0, 0) = NAN;
+    f.mjd_mid = 60000.5;
+    f.exptime_s = 60;
+    f.wcs = Wcs::make_tan(10.0, 20.0, 32.5, 24.5, 1.5, 30.0);
+    f.has_reg_offset = true;
+    f.reg_dx = 3.25;
+    f.reg_dy = -1.5;
+    const Frame c = crop_frame(f, 10, 5, 40, 30);
+    CHECK(c.image.width == 40 && c.image.height == 30);
+    CHECK(c.image.at(0, 0) == f.image.at(10, 5));
+    double ra1 = 0, de1 = 0, ra2 = 0, de2 = 0;
+    f.wcs.pix2sky(25.0, 17.0, ra1, de1);
+    c.wcs.pix2sky(15.0, 12.0, ra2, de2);
+    CHECK_NEAR(ra1, ra2, 1e-12);
+    CHECK_NEAR(de1, de2, 1e-12);
+    CHECK_NEAR(c.reg_dx, 13.25, 1e-12);  // detector x = 15 + 13.25 = (15 + 10) + 3.25
+    CHECK_NEAR(c.reg_dy, 3.5, 1e-12);
+    bool threw = false;
+    try {
+        crop_frame(f, 30, 0, 40, 10);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+
+    const std::string path = (temp_dir() / "int16.fits").string();
+    write_frame(path, f, {}, 16);
+    CHECK(fs::file_size(path) < 64 * 48 * 4);
+    FitsImage back = read_fits(path);
+    CHECK(back.header.get_int("BITPIX", 0) == 16);
+    CHECK(std::isnan(back.image.at(0, 0)));
+    double worst = 0.0;
+    for (int y = 0; y < 48; ++y)
+        for (int x = 0; x < 64; ++x)
+            if ((x || y) && !(x == 40 && y == 30))
+                worst = std::max(worst, std::fabs(static_cast<double>(back.image.at(x, y)) - f.image.at(x, y)));
+    CHECK(worst <= 10.0 / 4.0 * 0.5 + 1e-3);  // half a quantisation step, step <= noise / 4
+    CHECK(back.image.at(40, 30) > 1100.0f);   // the star stays far above the sky
+    const Frame g = frame_from_fits(std::move(back), path);
+    CHECK(g.has_reg_offset);
+    CHECK_NEAR(g.reg_dx, 3.25, 1e-9);
+}
+
+// Case files parse, resolve paths relative to the case, and skip missing data.
+static void test_regression_case() {
+    const fs::path dir = temp_dir() / "regcase";
+    fs::create_directories(dir / "frames");
+    {
+        std::ofstream o(dir / "x.case");
+        o << "# comment\nname = demo\ndata = frames   # trailing comment\nbaseline = b/x.csv\n"
+             "[search]\nvmin = 4\nvmax = 20.5\n[expect]\nmax_unexpected = 1\nthreshold_min = 5\n"
+             "[object A one]\nmjd = 60000.25\nx = 10\ny = 11.5\nvx = 1\nvy = -2\nra = 10.5\ndec = -3\n";
+    }
+    const RegressionCase c = load_regression_case((dir / "x.case").string());
+    CHECK(c.name == "demo");
+    CHECK(fs::equivalent(c.data_dir, dir / "frames"));
+    CHECK(c.baseline_path == (dir / "b" / "x.csv").lexically_normal().string());
+    CHECK_NEAR(c.params.vmax_pxh, 20.5, 1e-12);
+    CHECK(c.max_unexpected == 1);
+    CHECK(c.objects.size() == 1 && c.objects[0].name == "A one" && c.objects[0].has_sky);
+    CHECK_NEAR(c.objects[0].y, 11.5, 1e-12);
+    // empty frames directory and an unset variable are skips, not failures
+    CHECK(run_regression_case(c).status == RegressionStatus::Skipped);
+    {
+        std::ofstream o(dir / "y.case");
+        o << "data = ${FAINTTRAIL_SURELY_UNSET_VARIABLE}/x\n";
+    }
+    CHECK(run_regression_case(load_regression_case((dir / "y.case").string())).status == RegressionStatus::Skipped);
+    {
+        std::ofstream o(dir / "z.case");
+        o << "data = frames\n[search]\nvmax = fast\n";
+    }
+    bool threw = false;
+    try {
+        load_regression_case((dir / "z.case").string());
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 static void test_c_api() { CHECK(run_c_api_test() == 0); }
 
 int main() {
@@ -459,6 +549,8 @@ int main() {
         {"cancellation", test_cancellation},
         {"plate-solution transfer", test_wcs_transfer},
         {"backend contract", test_backend_contract},
+        {"crop and 16-bit FITS", test_crop_and_int16},
+        {"regression case files", test_regression_case},
         {"C API", test_c_api},
     };
     int failed = 0;

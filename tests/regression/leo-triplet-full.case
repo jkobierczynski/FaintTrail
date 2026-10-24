@@ -1,0 +1,30 @@
+# Full frames of the Leo Triplet sequence (registered as described in
+# leo-triplet-cut.case), with the plate solution transferred from the observer's
+# solved stack. Runs only when FAINTTRAIL_REGRESSION_DATA is set and contains
+# leo-triplet/ and leo-triplet-stack-solved.fits. About 13 minutes on 2 cores.
+name        = leo-triplet-full
+description = (21996) 1999 XP31, full 2328x1760 binned frames, WCS from the solved stack
+data        = ${FAINTTRAIL_REGRESSION_DATA}/leo-triplet
+baseline    = ${FAINTTRAIL_REGRESSION_DATA}/baselines/leo-triplet-full.csv
+
+[search]
+wcs_from = ${FAINTTRAIL_REGRESSION_DATA}/leo-triplet-stack-solved.fits
+
+[expect]
+max_unexpected = 0
+threshold_min  = 9.5
+threshold_max  = 13.0
+
+[object (21996) 1999 XP31]
+source  = MPChecker (geocentric) position 11 18 26.6 +13 45 01 at 2016-11-30 03:52:23 UTC
+mjd     = 57722.16137731
+x       = 165.23
+y       = 218.35
+vx      = 1.07
+vy      = 19.79
+pos_tol = 1.0
+vel_tol = 2.0
+min_snr = 13.0
+ra      = 169.610833
+dec     = 13.750278
+sky_tol = 5.0

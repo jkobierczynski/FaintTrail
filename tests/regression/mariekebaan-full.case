@@ -1,0 +1,30 @@
+# Full frames of the Mariekebaan sequence (registered as described in
+# mariekebaan-cut.case). Runs only when FAINTTRAIL_REGRESSION_DATA is set and
+# contains mariekebaan/ and mariekebaan-stack-solved.fits. Includes the moving blank borders and the warm pixel
+# that the edge and detector tests must reject.
+name        = mariekebaan-full
+description = (12631) Mariekebaan, full 695x519 binned frames
+data        = ${FAINTTRAIL_REGRESSION_DATA}/mariekebaan
+baseline    = ${FAINTTRAIL_REGRESSION_DATA}/baselines/mariekebaan-full.csv
+
+[search]
+wcs_from = ${FAINTTRAIL_REGRESSION_DATA}/mariekebaan-stack-solved.fits
+
+[expect]
+max_unexpected = 0
+threshold_min  = 6.5
+threshold_max  = 8.5
+
+[object (12631) Mariekebaan]
+source  = ephemeris: n-body integration of the JPL SBDB orbit, topocentric for the observing site (15 39 54.40 -06 37 08.7); confirmed by the observer
+mjd     = 56505.89451396
+x       = 333.63
+y       = 307.68
+vx      = -7.59
+vy      = -5.04
+pos_tol = 1.0
+vel_tol = 2.0
+min_snr = 8.5
+ra      = 234.976680
+dec     = -6.619097
+sky_tol = 3.0

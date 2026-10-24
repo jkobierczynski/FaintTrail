@@ -4,6 +4,7 @@ cmake-build-*/
 *.fits
 *.fit
 !tests/data/*.fits
+!tests/regression/data/*/*.fits
 candidates.csv
 tracklets.csv
 completeness.csv

@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.2.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and two real sequences.**
+> Status: **0.3.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -170,12 +170,22 @@ See [docs/VALIDATION.md](docs/VALIDATION.md) for the false-alarm, completeness a
 astrometry benchmarks on simulated data, and how to reproduce them with
 `fainttrail_benchmark`.
 
+Real data are covered by a regression suite ([tests/regression](tests/regression/README.md)):
+two asteroids identified in the author's captures, (12631) Mariekebaan and
+(21996) 1999 XP31, both checked against their catalogue/ephemeris sky positions, and a null field
+around Ceres. Small 16-bit crops run with every `ctest`; the full frames run
+when `FAINTTRAIL_REGRESSION_DATA` is set.
+
+```sh
+fainttrail regress tests/regression [--backend NAME] [--strict]
+```
+
 ## Roadmap
 
 * CUDA backend behind the same search interface, with the CPU path as reference
 * tiling for large sensors and long sequences
 * curved motion for fast near-Earth objects
-* validation on real data with known asteroids, then integration with AstroFind and Siril
+* more real-data cases (fainter and faster objects), then integration with AstroFind and Siril
 
 ## Licence
 

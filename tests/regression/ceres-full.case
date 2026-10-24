@@ -1,0 +1,15 @@
+# Null case on the full Ceres frames (see ceres-cut.case). Runs only when
+# FAINTTRAIL_REGRESSION_DATA is set and contains ceres/.
+name        = ceres-full
+description = no detections allowed: full 1391x1039 frames, fast motions
+data        = ${FAINTTRAIL_REGRESSION_DATA}/ceres
+baseline    = ${FAINTTRAIL_REGRESSION_DATA}/baselines/ceres-full.csv
+
+[search]
+vmin = 60
+vmax = 600
+
+[expect]
+max_unexpected = 0
+threshold_min  = 5.5
+threshold_max  = 9.0
