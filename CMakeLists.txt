@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(fainttrail VERSION 0.5.0 LANGUAGES C CXX
+project(fainttrail VERSION 0.6.0 LANGUAGES C CXX
         DESCRIPTION "Synthetic tracking engine for faint asteroid and comet detection")
 
 set(CMAKE_CXX_STANDARD 17)
@@ -30,6 +30,7 @@ add_library(fainttrail
   src/io.cpp
   src/astrometry.cpp
   src/regression.cpp
+  src/memory.cpp
   src/backend.cpp
   src/backend_cpu.cpp
   src/c_api.cpp)
@@ -51,6 +52,9 @@ else()
   endif()
 endif()
 
+if(WIN32)
+  target_link_libraries(fainttrail PRIVATE psapi)
+endif()
 if(OpenMP_CXX_FOUND)
   target_link_libraries(fainttrail PRIVATE OpenMP::OpenMP_CXX)
   target_compile_definitions(fainttrail PRIVATE FAINTTRAIL_HAVE_OPENMP=1)

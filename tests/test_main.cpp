@@ -3,6 +3,7 @@
 //
 // Unit and end-to-end tests. Plain C++, no framework needed: each test is a
 // function; a failed CHECK prints the location and marks the test as failed.
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -542,6 +543,52 @@ static void test_regression_case() {
     CHECK(threw);
 }
 
+// Memory layout: residuals are dropped by default and recomputed exactly where
+// needed; handing the frames over gives the same result as copying them.
+static void test_memory_layout() {
+    const SimResult sim = simulate(small_sim(21));
+    SearchParams p = quick_search();
+    const Prepared a = prepare(sim.frames, p);
+    CHECK(a.residual.empty());
+    CHECK(static_cast<int>(a.sub.size()) == a.nframes);
+    SearchParams pk = p;
+    pk.keep_residuals = true;
+    const Prepared b = prepare(sim.frames, pk);
+    CHECK(static_cast<int>(b.residual.size()) == b.nframes);
+    bool same = true;
+    for (int i = 0; i < a.nframes && same; ++i) same = a.filtered[static_cast<std::size_t>(i)].data == b.filtered[static_cast<std::size_t>(i)].data;
+    CHECK(same);
+    // residual cutouts: recomputed (a) equal kept (b), bit for bit, also at the border
+    for (const auto& pos : {std::array<double, 4>{60.3, 70.7, 12.0, -7.5}, std::array<double, 4>{1.2, 2.5, 20.0, 3.0},
+                            std::array<double, 4>{190.4, 150.0, -15.0, 9.0}}) {
+        const Image ca = stack_cutout(a, pos[0], pos[1], pos[2], pos[3], 6, false, 0);
+        const Image cb = stack_cutout(b, pos[0], pos[1], pos[2], pos[3], 6, false, 0);
+        bool eq = ca.data.size() == cb.data.size();
+        for (std::size_t k = 0; eq && k < ca.data.size(); ++k)
+            eq = (std::isnan(ca.data[k]) && std::isnan(cb.data[k])) || ca.data[k] == cb.data[k];
+        CHECK(eq);
+    }
+    bool threw = false;
+    try {
+        stack_full(a, 10.0, 0.0);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    // moving the frames in gives the same search result
+    std::vector<Frame> copy = sim.frames;
+    const Prepared m = prepare(std::move(copy), p);
+    CHECK(copy.empty() || copy.front().image.data.empty());
+    const SearchResult r1 = search(a, p), r2 = search(m, p);
+    CHECK(r1.candidates.size() == r2.candidates.size());
+    CHECK(r1.threshold_snr == r2.threshold_snr);
+    for (std::size_t k = 0; k < std::min(r1.candidates.size(), r2.candidates.size()); ++k) {
+        CHECK(r1.candidates[k].x == r2.candidates[k].x);
+        CHECK(r1.candidates[k].flux == r2.candidates[k].flux);
+    }
+    CHECK(!r1.timings.empty() && r1.timings.front().rss_mb >= 0.0);
+}
+
 static void test_c_api() { CHECK(run_c_api_test() == 0); }
 
 int main() {
@@ -565,6 +612,7 @@ int main() {
         {"backend contract", test_backend_contract},
         {"crop and 16-bit FITS", test_crop_and_int16},
         {"regression case files", test_regression_case},
+        {"memory layout", test_memory_layout},
         {"C API", test_c_api},
     };
     int failed = 0;

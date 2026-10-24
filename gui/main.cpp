@@ -16,6 +16,7 @@
 #include "mainwindow.hpp"
 
 int main(int argc, char** argv) {
+    fainttrail::tune_allocator_for_images();
     QApplication app(argc, argv);
     QApplication::setApplicationName("fainttrail-gui");
     QApplication::setApplicationVersion(fainttrail::version());

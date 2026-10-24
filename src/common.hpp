@@ -19,13 +19,21 @@
 
 namespace fainttrail::detail {
 
-// Records the wall-clock time between successive lap() calls.
+// Resident memory of this process in MB (0 if unknown on this platform).
+double current_rss_mb();
+// Highest resident memory of this process so far, in MB.
+double peak_rss_mb();
+// Return freed heap memory to the operating system where the C library allows it.
+void release_free_memory();
+
+// Records the wall-clock time between successive lap() calls, and the resident
+// memory at each lap.
 class Stopwatch {
 public:
     explicit Stopwatch(std::vector<StageTime>* out) : out_(out), t_(std::chrono::steady_clock::now()) {}
     void lap(const std::string& name) {
         const auto now = std::chrono::steady_clock::now();
-        if (out_) out_->push_back({name, std::chrono::duration<double>(now - t_).count()});
+        if (out_) out_->push_back({name, std::chrono::duration<double>(now - t_).count(), current_rss_mb()});
         t_ = now;
     }
 
@@ -125,6 +133,26 @@ inline float bilinear(const Image& img, double x, double y) {
     const float* r0 = &img.data[static_cast<std::size_t>(y0) * img.width + x0];
     const float* r1 = r0 + img.width;
     return static_cast<float>((1 - fy) * ((1 - fx) * r0[0] + fx * r0[1]) + fy * ((1 - fx) * r1[0] + fx * r1[1]));
+}
+
+// bilinear() for a patch cut out of a larger image: the patch holds the pixels
+// of the full image (full_w x full_h) starting at (ox, oy). Same arithmetic and
+// border rule as bilinear() on the full image, so the results are identical.
+inline float bilinear_patch(const Image& patch, int ox, int oy, int full_w, int full_h, double x, double y) {
+    const int x0 = static_cast<int>(std::floor(x)), y0 = static_cast<int>(std::floor(y));
+    auto at = [&](int xx, int yy) -> float {
+        if (!patch.inside(xx - ox, yy - oy)) return NAN;
+        return patch.at(xx - ox, yy - oy);
+    };
+    if (x0 < 0 || y0 < 0 || x0 + 1 >= full_w || y0 + 1 >= full_h) {
+        const int xr = static_cast<int>(std::lround(x)), yr = static_cast<int>(std::lround(y));
+        if (xr >= 0 && yr >= 0 && xr < full_w && yr < full_h && std::fabs(x - xr) < 1e-9 && std::fabs(y - yr) < 1e-9)
+            return at(xr, yr);
+        return NAN;
+    }
+    const double fx = x - x0, fy = y - y0;
+    return static_cast<float>((1 - fy) * ((1 - fx) * at(x0, y0) + fx * at(x0 + 1, y0)) +
+                              fy * ((1 - fx) * at(x0, y0 + 1) + fx * at(x0 + 1, y0 + 1)));
 }
 
 }  // namespace fainttrail::detail

@@ -89,6 +89,7 @@ struct RegressionOutcome {
     int width = 0, height = 0;
     double load_s = 0.0, prepare_s = 0.0, search_s = 0.0;
     std::string profile;  // profile_text() of the run
+    double memory_mb = 0.0;  // highest resident memory at the end of any stage of this case
 };
 
 struct RegressionOptions {

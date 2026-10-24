@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "common.hpp"
 #include "fainttrail/fits.hpp"
 
 namespace fainttrail {
@@ -219,6 +220,7 @@ std::string profile_text(const Prepared& prep, const SearchResult& res, double l
         double s = 0.0;
         int n = 0;
         bool sub = false;
+        double rss = 0.0;  // highest resident memory seen at the end of this stage
     };
     std::vector<Row> rows;
     auto add = [&](const std::string& prefix, const StageTime& t) {
@@ -228,9 +230,10 @@ std::string profile_text(const Prepared& prep, const SearchResult& res, double l
             if (r.name == name) {
                 r.s += t.seconds;
                 ++r.n;
+                r.rss = std::max(r.rss, t.rss_mb);
                 return;
             }
-        rows.push_back({name, t.seconds, 1, sub});
+        rows.push_back({name, t.seconds, 1, sub, t.rss_mb});
     };
     if (load_s > 0.0) add("", {"load frames", load_s});
     for (const auto& t : prep.timings) add("prepare: ", t);
@@ -247,16 +250,20 @@ std::string profile_text(const Prepared& prep, const SearchResult& res, double l
     }
     std::ostringstream o;
     o << std::fixed;
-    o << "profile (wall clock; null-run stages summed over " << std::max(0, passes - 1) << " runs)\n";
+    o << "profile (wall clock; null-run stages summed over " << std::max(0, passes - 1)
+      << " runs; MB = resident memory at the end of the stage)\n";
     for (const auto& r : rows) {
         o << "  " << std::left << std::setw(34) << r.name << std::right << std::setw(9) << std::setprecision(2) << r.s
           << " s";
         if (!r.sub) o << std::setw(7) << std::setprecision(1) << (total > 0 ? 100.0 * r.s / total : 0.0) << " %";
+        if (!r.sub && r.rss > 0.0) o << std::setw(8) << std::setprecision(0) << r.rss << " MB";
         if (r.n > 1) o << "   (" << r.n << "x)";
         o << "\n";
     }
     o << "  " << std::left << std::setw(34) << "total" << std::right << std::setw(9) << std::setprecision(2) << total
       << " s\n";
+    const double peak = detail::peak_rss_mb();
+    if (peak > 0.0) o << "peak memory of the process so far: " << std::setprecision(0) << peak << " MB\n";
     if (stack > 0.0 && passes > 0) {
         const double adds = static_cast<double>(res.n_velocities) * prep.nframes * prep.width * prep.height * passes;
         o << "stacking: " << passes << " passes x " << res.n_velocities << " motions x " << prep.nframes << " frames x "

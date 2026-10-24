@@ -307,7 +307,7 @@ int cmd_simulate(const Args& a) {
 
 int cmd_search(const Args& a) {
     const auto t_load = std::chrono::steady_clock::now();
-    const auto frames = load_inputs(a);
+    auto frames = load_inputs(a);
     const double load_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count();
     const SearchParams p = search_params(a, frames);
     const ProgressFn prog = make_progress(a.flag("--quiet"));
@@ -316,7 +316,7 @@ int cmd_search(const Args& a) {
         prep_prog = [&](double f, const std::string& s) { return prog(0.1 * f, s); };
         search_prog = [&](double f, const std::string& s) { return prog(0.1 + 0.9 * f, s); };
     }
-    const Prepared prep = prepare(frames, p, prep_prog);
+    const Prepared prep = prepare(std::move(frames), p, prep_prog);  // hands over the pixel buffers
     const SearchResult res = search(prep, p, search_prog);
     const std::string out = a.str("-o", "candidates.csv");
     write_candidates_csv(out, res);
@@ -337,9 +337,10 @@ int cmd_search(const Args& a) {
 }
 
 int cmd_stack(const Args& a) {
-    const auto frames = load_inputs(a);
+    auto frames = load_inputs(a);
     SearchParams p = search_params(a, frames);
-    const Prepared prep = prepare(frames, p);
+    p.keep_residuals = true;  // stack_full works on the residuals
+    const Prepared prep = prepare(std::move(frames), p);
     double vx = a.num("--vx", NAN), vy = a.num("--vy", NAN);
     if (a.flag("--rate")) {
         if (!prep.wcs.valid) throw std::runtime_error("--rate/--pa need a WCS; use --vx/--vy");
@@ -495,7 +496,7 @@ int cmd_regress(const Args& a) {
     if (a.flag("--report")) {
         report = std::fopen(a.str("--report").c_str(), "w");
         if (!report) throw std::runtime_error("cannot write " + a.str("--report"));
-        std::fprintf(report, "case,status,backend,frames,width,height,velocities,threshold,passed,candidates,load_s,prepare_s,search_s\n");
+        std::fprintf(report, "case,status,backend,frames,width,height,velocities,threshold,passed,candidates,load_s,prepare_s,search_s,memory_mb\n");
     }
     int n_fail = 0, n_changed = 0, n_skip = 0, n_pass = 0;
     for (const auto& path : cases) {
@@ -512,7 +513,8 @@ int cmd_regress(const Args& a) {
         std::printf("   %zu frames %dx%d, backend %s, %zu motions, threshold %.2f, %d passed / %zu candidates\n",
                     o.nframes, o.width, o.height, o.result.backend.c_str(), o.result.n_velocities,
                     o.result.threshold_snr, passed, o.result.candidates.size());
-        std::printf("   time: load %.1f s, prepare %.1f s, search %.1f s\n", o.load_s, o.prepare_s, o.search_s);
+        std::printf("   time: load %.1f s, prepare %.1f s, search %.1f s; memory %.0f MB\n", o.load_s, o.prepare_s,
+                    o.search_s, o.memory_mb);
         if (a.flag("--profile")) std::printf("%s", o.profile.c_str());
         for (const auto& ch : o.checks)
             std::printf("   %-7s %s\n", ch.ok ? "ok" : (ch.hard || opt.strict ? "FAIL" : "changed"), ch.text.c_str());
@@ -522,10 +524,10 @@ int cmd_regress(const Args& a) {
         }
         std::printf("   => %s\n\n", status_name(o.status));
         if (report)
-            std::fprintf(report, "%s,%s,%s,%zu,%d,%d,%zu,%.3f,%d,%zu,%.2f,%.2f,%.2f\n", c.name.c_str(),
+            std::fprintf(report, "%s,%s,%s,%zu,%d,%d,%zu,%.3f,%d,%zu,%.2f,%.2f,%.2f,%.0f\n", c.name.c_str(),
                          status_name(o.status), o.result.backend.c_str(), o.nframes, o.width, o.height,
                          o.result.n_velocities, o.result.threshold_snr, passed, o.result.candidates.size(), o.load_s,
-                         o.prepare_s, o.search_s);
+                         o.prepare_s, o.search_s, o.memory_mb);
         switch (o.status) {
             case RegressionStatus::Fail: ++n_fail; break;
             case RegressionStatus::Changed: ++n_changed; break;
@@ -567,6 +569,7 @@ int cmd_validate(const Args& a) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    fainttrail::tune_allocator_for_images();
     if (argc < 2) {
         std::fputs(kUsage, stdout);
         return 1;

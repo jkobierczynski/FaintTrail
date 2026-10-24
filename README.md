@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.5.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
+> Status: **0.6.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -172,7 +172,9 @@ stacking kernel itself. [docs/PROFILING.md](docs/PROFILING.md) has the results f
 the full Leo Triplet run: stacking is 88 % of the time (three quarters of it in the
 null calibration) and the kernel is limited by memory bandwidth. Since 0.5 the CPU
 backend is cache-blocked: the full Leo Triplet run went from 578 s to 175 s on the
-same 2-core machine, with bit-identical results.
+same 2-core machine, with bit-identical results. Since 0.6 a search keeps about
+3 copies of the sequence in memory at its peak instead of 6 (Leo Triplet: 2.1 GB →
+1.1 GB).
 
 ## Validation
 

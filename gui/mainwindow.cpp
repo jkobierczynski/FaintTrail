@@ -517,6 +517,7 @@ SearchParams MainWindow::currentParams() const {
     p.fwhm_px = m_fwhm->value();
     p.threads = m_threads->value();
     p.backend = m_backend->currentData().toString().toStdString();
+    p.keep_residuals = true;  // the frame viewer shows residuals
     return p;
 }
 
@@ -550,7 +551,7 @@ void MainWindow::runSearch() {
         };
         try {
             out.prep = std::make_shared<Prepared>(
-                prepare(*frames, params, [&](double f, const std::string& s) { return cb(0.1 * f, s); }));
+                prepare(std::move(*frames), params, [&](double f, const std::string& s) { return cb(0.1 * f, s); }));
             out.result = std::make_shared<SearchResult>(
                 search(*out.prep, params, [&](double f, const std::string& s) { return cb(0.1 + 0.9 * f, s); }));
         } catch (const Cancelled&) {

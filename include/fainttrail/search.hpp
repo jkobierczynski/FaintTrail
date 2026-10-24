@@ -57,6 +57,10 @@ struct SearchParams {
     int threads = 0;                  // 0 = all available (CPU backend)
     // Stacking backend: "auto" (best available), "cpu", ... see backend.hpp.
     std::string backend = "auto";
+    // Keep the residual images (frame - background - static sky) in Prepared after
+    // preparation. Needed only for residual displays, stack_full() and
+    // stack_cutout(snr = false); costs one more copy of the frames in memory.
+    bool keep_residuals = false;
     std::uint64_t seed = 12345;
 };
 
@@ -66,6 +70,7 @@ struct SearchParams {
 struct StageTime {
     std::string name;
     double seconds = 0.0;
+    double rss_mb = 0.0;  // resident memory of the process at the end of the stage (0 = not measured)
 };
 
 struct Prepared {
@@ -76,7 +81,7 @@ struct Prepared {
     std::vector<double> sigma;          // per-frame residual noise, data units
     std::vector<double> background;     // per-frame background level, data units
     std::vector<Image> sub;             // frame - background (data units), kept for null runs
-    std::vector<Image> residual;        // frame - background - static sky (data units)
+    std::vector<Image> residual;        // frame - background - static sky (data units); empty unless keep_residuals
     std::vector<Image> filtered;        // matched-filtered S/N images (unit variance)
     Image static_sky;                   // median of background-subtracted frames
     Image mask;                         // 1 = usable, 0 = masked
@@ -86,6 +91,8 @@ struct Prepared {
     std::vector<double> exptime_s;
     std::vector<double> reg_dx, reg_dy; // registration offsets, empty if unknown
     std::vector<StageTime> timings;     // preprocessing stages, in order
+    std::vector<int> time_rank;         // rank of each frame in time (for recomputing residuals)
+    int static_exclude = 0;             // frames left out on each side by the leave-out median
 };
 
 struct Candidate {
@@ -139,6 +146,17 @@ struct SearchResult {
 // Preprocess frames: background removal, static-sky subtraction, noise
 // normalisation, masking and matched filtering. Frames must be registered.
 Prepared prepare(const std::vector<Frame>& frames, const SearchParams& params,
+                 const ProgressFn& progress = {});
+
+// For applications (not libraries embedding FaintTrail): call once at start-up.
+// With glibc, frame-sized buffers are then always mapped separately, so memory
+// freed between stages goes back to the system at once instead of staying with
+// the process (about 30 % lower peak memory on large sequences). No-op elsewhere.
+void tune_allocator_for_images();
+
+// Same, but takes over the frames' pixel buffers instead of copying them, which
+// saves one copy of the sequence in memory. The frames' images are left empty.
+Prepared prepare(std::vector<Frame>&& frames, const SearchParams& params,
                  const ProgressFn& progress = {});
 
 // Full blind search, including the null calibration if threshold_snr == 0.

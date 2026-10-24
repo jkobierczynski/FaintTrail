@@ -261,12 +261,15 @@ Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, doub
         for (int i = 0; i < p.nframes; ++i) {
             const double t = p.t_h[static_cast<std::size_t>(i)];
             const int xi = static_cast<int>(std::lround(bx + bvx * t)), yi = static_cast<int>(std::lround(by + bvy * t));
-            const Image& res = p.residual[static_cast<std::size_t>(i)];
+            // a residual pixel is blank exactly where the background-subtracted frame or
+            // the static sky is undefined (see build_stage)
+            const Image& sub = p.sub[static_cast<std::size_t>(i)];
             ++total;
             bool blank = false;
             for (int dy = -r; dy <= r && !blank; ++dy)
                 for (int dx = -r; dx <= r; ++dx) {
-                    if (!res.inside(xi + dx, yi + dy) || !std::isfinite(res.at(xi + dx, yi + dy))) {
+                    if (!sub.inside(xi + dx, yi + dy) || !std::isfinite(sub.at(xi + dx, yi + dy)) ||
+                        !std::isfinite(p.static_sky.at(xi + dx, yi + dy))) {
                         blank = true;
                         break;
                     }
@@ -432,6 +435,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
             // so the null sees exactly the same noise structure as the real search
             const std::string stage = "null " + std::to_string(k + 1) + "/" + std::to_string(runs);
             if (progress && !progress(share * (k + 1), stage)) throw Cancelled();
+            detail::release_free_memory();
             const Prepared q = detail::with_times(p, t, params);
             sw.lap("null rebuild");
             PassOutput null = run_pass(*backend, q, grid, t, params, progress, share * (k + 1), share * (k + 2), stage);
@@ -439,7 +443,9 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
             for (const auto& st : null.timings) res.timings.push_back({"  " + st.name, st.seconds});
             for (const auto& pk : find_peaks(null, 3.0f, nms, edge, 20000)) pooled.push_back(pk.snr);
             sw.lap("peaks (null)");
+            // the previous null run's frames are released when q goes out of scope
         }
+        detail::release_free_memory();
         res.null_peaks.assign(pooled.begin(), pooled.end());
         double a = 0, b = 0;
         if (fit_null_tail(pooled, runs, a, b)) {
@@ -558,6 +564,11 @@ SearchResult search(const std::vector<Frame>& frames, const SearchParams& params
     return search(p, params, search_progress);
 }
 
+static void require_residuals(const Prepared& p) {
+    if (static_cast<int>(p.residual.size()) != p.nframes)
+        throw std::runtime_error("residual images were not kept; prepare with SearchParams::keep_residuals = true");
+}
+
 Image stack_cutout(const Prepared& p, double x, double y, double vx, double vy, int half_size,
                    bool snr, int which) {
     const int size = 2 * half_size + 1;
@@ -567,11 +578,16 @@ Image stack_cutout(const Prepared& p, double x, double y, double vx, double vy, 
         const double t = p.t_h[static_cast<std::size_t>(i)];
         if (which == 1 && t >= 0.0) continue;
         if (which == 2 && t < 0.0) continue;
-        const Image& src = snr ? p.filtered[static_cast<std::size_t>(i)] : p.residual[static_cast<std::size_t>(i)];
         const double cx = x + vx * t, cy = y + vy * t;
+        // residuals: the small area the bilinear samples touch, copied or recomputed
+        const int px0 = static_cast<int>(std::floor(cx - half_size)) - 1, py0 = static_cast<int>(std::floor(cy - half_size)) - 1;
+        Image patch;
+        if (!snr) patch = detail::residual_patch(p, i, px0, py0, size + 3, size + 3);
         for (int v = 0; v < size; ++v)
             for (int u = 0; u < size; ++u) {
-                const float s = detail::bilinear(src, cx + u - half_size, cy + v - half_size);
+                const float s = snr ? detail::bilinear(p.filtered[static_cast<std::size_t>(i)], cx + u - half_size, cy + v - half_size)
+                                    : detail::bilinear_patch(patch, px0, py0, p.width, p.height, cx + u - half_size,
+                                                             cy + v - half_size);
                 if (!std::isfinite(s)) continue;
                 out.data[static_cast<std::size_t>(v) * size + u] += s;
                 ++count[static_cast<std::size_t>(v) * size + u];
@@ -586,6 +602,7 @@ Image stack_cutout(const Prepared& p, double x, double y, double vx, double vy, 
 }
 
 Image stack_full(const Prepared& p, double vx, double vy) {
+    require_residuals(p);
     Image out(p.width, p.height, 0.0f);
     std::vector<int> count(out.data.size(), 0);
     for (int i = 0; i < p.nframes; ++i) {

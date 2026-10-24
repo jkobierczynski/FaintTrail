@@ -136,6 +136,79 @@ void matched_filter(const Image& in, Image& out, double sigma, Image& tmp) {
 
 namespace detail {
 
+float static_sky_column(const std::vector<Image>& sub, std::size_t idx, const std::vector<int>& rank, int exclude,
+                        std::vector<std::pair<float, int>>& sorted, std::vector<float>& vals, float* residual) {
+    const int n = static_cast<int>(sub.size());
+    sorted.clear();
+    for (int i = 0; i < n; ++i) {
+        const float v = sub[static_cast<std::size_t>(i)].data[idx];
+        vals[static_cast<std::size_t>(i)] = v;
+        if (std::isfinite(v)) sorted.emplace_back(v, rank[static_cast<std::size_t>(i)]);
+    }
+    // too few frames cover this pixel for a reliable static sky (field edges)
+    if (sorted.size() < std::max<std::size_t>(5, static_cast<std::size_t>(0.6 * n))) {
+        for (int i = 0; i < n; ++i) residual[i] = NAN;
+        return NAN;
+    }
+    std::sort(sorted.begin(), sorted.end());
+    const std::size_t m_all = sorted.size();
+    const double global = 0.5 * (sorted[(m_all - 1) / 2].first + sorted[m_all / 2].first);
+    for (int i = 0; i < n; ++i) {
+        const float v = vals[static_cast<std::size_t>(i)];
+        if (!std::isfinite(v)) {
+            residual[i] = NAN;
+            continue;
+        }
+        double st = global;
+        if (exclude > 0) {
+            const int ri = rank[static_cast<std::size_t>(i)];
+            std::size_t m = 0;
+            for (const auto& e : sorted)
+                if (std::abs(e.second - ri) > exclude) ++m;
+            if (m >= 5) {
+                const std::size_t lo = (m - 1) / 2, hi = m / 2;
+                std::size_t k = 0;
+                double a = 0.0, b = 0.0;
+                for (const auto& e : sorted) {
+                    if (std::abs(e.second - ri) <= exclude) continue;
+                    if (k == lo) a = e.first;
+                    if (k == hi) {
+                        b = e.first;
+                        break;
+                    }
+                    ++k;
+                }
+                st = 0.5 * (a + b);
+            }
+        }
+        residual[i] = static_cast<float>(v - st);
+    }
+    return static_cast<float>(global);
+}
+
+Image residual_patch(const Prepared& p, int frame, int x0, int y0, int w, int h) {
+    Image out(w, h, NAN);
+    if (static_cast<int>(p.residual.size()) == p.nframes) {  // kept: just copy
+        const Image& r = p.residual[static_cast<std::size_t>(frame)];
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                if (r.inside(x0 + x, y0 + y)) out.at(x, y) = r.at(x0 + x, y0 + y);
+        return out;
+    }
+    if (static_cast<int>(p.sub.size()) != p.nframes || static_cast<int>(p.time_rank.size()) != p.nframes)
+        throw std::runtime_error("residuals are neither kept nor recomputable (no background-subtracted frames)");
+    std::vector<std::pair<float, int>> sorted;
+    std::vector<float> vals(static_cast<std::size_t>(p.nframes)), res(static_cast<std::size_t>(p.nframes));
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            if (x0 + x < 0 || y0 + y < 0 || x0 + x >= p.width || y0 + y >= p.height) continue;
+            const std::size_t idx = static_cast<std::size_t>(y0 + y) * p.width + (x0 + x);
+            static_sky_column(p.sub, idx, p.time_rank, p.static_exclude, sorted, vals, res.data());
+            out.at(x, y) = res[static_cast<std::size_t>(frame)];
+        }
+    return out;
+}
+
 // Steps that depend on the time order of the frames: static sky, residuals,
 // noise, mask and matched filter. Used for the real data and, with permuted
 // times, for every null run, so that both see exactly the same estimator.
@@ -168,61 +241,19 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
 #pragma omp parallel num_threads(nt)
     {
         std::vector<std::pair<float, int>> sorted;
-        std::vector<float> vals(static_cast<std::size_t>(n));
+        std::vector<float> vals(static_cast<std::size_t>(n)), res(static_cast<std::size_t>(n));
         sorted.reserve(static_cast<std::size_t>(n));
 #pragma omp for schedule(static)
         for (int y = 0; y < h; ++y) {
             for (int x = 0; x < w; ++x) {
                 const std::size_t idx = static_cast<std::size_t>(y) * w + x;
-                sorted.clear();
-                for (int i = 0; i < n; ++i) {
-                    const float v = sub[static_cast<std::size_t>(i)].data[idx];
-                    vals[static_cast<std::size_t>(i)] = v;
-                    if (std::isfinite(v)) sorted.emplace_back(v, rank[static_cast<std::size_t>(i)]);
-                }
-                // too few frames cover this pixel for a reliable static sky (field edges)
-                if (sorted.size() < std::max<std::size_t>(5, static_cast<std::size_t>(0.6 * n))) {
-                    p.static_sky.data[idx] = NAN;
-                    for (int i = 0; i < n; ++i) p.residual[static_cast<std::size_t>(i)].data[idx] = NAN;
-                    continue;
-                }
-                std::sort(sorted.begin(), sorted.end());
-                const std::size_t m_all = sorted.size();
-                const double global = 0.5 * (sorted[(m_all - 1) / 2].first + sorted[m_all / 2].first);
-                p.static_sky.data[idx] = static_cast<float>(global);
-                for (int i = 0; i < n; ++i) {
-                    const float v = vals[static_cast<std::size_t>(i)];
-                    if (!std::isfinite(v)) {
-                        p.residual[static_cast<std::size_t>(i)].data[idx] = NAN;
-                        continue;
-                    }
-                    double st = global;
-                    if (exclude > 0) {
-                        const int ri = rank[static_cast<std::size_t>(i)];
-                        std::size_t m = 0;
-                        for (const auto& e : sorted)
-                            if (std::abs(e.second - ri) > exclude) ++m;
-                        if (m >= 5) {
-                            const std::size_t lo = (m - 1) / 2, hi = m / 2;
-                            std::size_t k = 0;
-                            double a = 0.0, b = 0.0;
-                            for (const auto& e : sorted) {
-                                if (std::abs(e.second - ri) <= exclude) continue;
-                                if (k == lo) a = e.first;
-                                if (k == hi) {
-                                    b = e.first;
-                                    break;
-                                }
-                                ++k;
-                            }
-                            st = 0.5 * (a + b);
-                        }
-                    }
-                    p.residual[static_cast<std::size_t>(i)].data[idx] = static_cast<float>(v - st);
-                }
+                p.static_sky.data[idx] = static_sky_column(sub, idx, rank, exclude, sorted, vals, res.data());
+                for (int i = 0; i < n; ++i) p.residual[static_cast<std::size_t>(i)].data[idx] = res[static_cast<std::size_t>(i)];
             }
         }
     }
+    p.time_rank = rank;
+    p.static_exclude = exclude;
 
     sw.lap("static sky + residuals");
     // per-frame residual noise
@@ -334,11 +365,18 @@ void build_stage(const std::vector<Image>& sub, Prepared& p, const SearchParams&
             for (auto& v : g.data) v *= ig;
         }
         p.filtered[static_cast<std::size_t>(i)] = std::move(g);
+        // the residual of this frame is no longer needed (the scatter map is done)
+        if (!params.keep_residuals) p.residual[static_cast<std::size_t>(i)] = Image();
         const int d = ++done;
         if (detail::thread_id() == 0 && progress && !progress(0.55 + 0.45 * d / n, "matched filter"))
             cancel = true;
     }
     if (cancel) throw Cancelled();
+    if (!params.keep_residuals) {
+        p.residual.clear();
+        p.residual.shrink_to_fit();
+    }
+    release_free_memory();
     sw.lap("matched filter");
 }
 
@@ -357,14 +395,19 @@ Prepared with_times(const Prepared& base, const std::vector<double>& t_h, const 
     q.exptime_s = base.exptime_s;
     q.reg_dx = base.reg_dx;
     q.reg_dy = base.reg_dy;
-    build_stage(base.sub, q, params, {}, false);
+    SearchParams np = params;
+    np.keep_residuals = false;  // the null runs only need the filtered frames
+    build_stage(base.sub, q, np, {}, false);
     return q;
 }
 
 }  // namespace detail
 
-Prepared prepare(const std::vector<Frame>& frames, const SearchParams& params,
-                 const ProgressFn& progress) {
+namespace {
+
+// steal = true: the frames' pixel buffers are moved into the prepared data.
+Prepared prepare_frames(std::vector<Frame>& frames, bool steal, const SearchParams& params,
+                        const ProgressFn& progress) {
     const int n = static_cast<int>(frames.size());
     if (n < 5) throw std::runtime_error("synthetic tracking needs at least 5 frames");
     const int w = frames[0].image.width, h = frames[0].image.height;
@@ -412,7 +455,7 @@ Prepared prepare(const std::vector<Frame>& frames, const SearchParams& params,
         auto s = detail::sample_pixels(frames[static_cast<std::size_t>(i)].image, 200000);
         const double bg = detail::median_inplace(s);
         p.background[static_cast<std::size_t>(i)] = bg;
-        Image im = frames[static_cast<std::size_t>(i)].image;
+        Image im = steal ? std::move(frames[static_cast<std::size_t>(i)].image) : frames[static_cast<std::size_t>(i)].image;
         for (auto& v : im.data) v = std::isfinite(v) ? static_cast<float>(v - bg) : NAN;
         // Registered frames carry blank (NaN) borders where the field drifted out.
         // Interpolation leaves damaged pixels along those borders, so the blank area
@@ -441,6 +484,17 @@ Prepared prepare(const std::vector<Frame>& frames, const SearchParams& params,
     detail::build_stage(p.sub, p, params, progress, true);
     if (progress && !progress(1.0, "prepared")) throw Cancelled();
     return p;
+}
+
+}  // namespace
+
+Prepared prepare(const std::vector<Frame>& frames, const SearchParams& params, const ProgressFn& progress) {
+    // not modified: steal = false only reads the frames
+    return prepare_frames(const_cast<std::vector<Frame>&>(frames), false, params, progress);
+}
+
+Prepared prepare(std::vector<Frame>&& frames, const SearchParams& params, const ProgressFn& progress) {
+    return prepare_frames(frames, true, params, progress);
 }
 
 }  // namespace fainttrail

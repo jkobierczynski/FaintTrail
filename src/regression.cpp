@@ -252,12 +252,14 @@ RegressionOutcome run_regression_case(const RegressionCase& c, const RegressionO
         sp = [&](double f, const std::string& s) { return progress(0.1 + 0.9 * f, s); };
     }
     t0 = std::chrono::steady_clock::now();
-    const Prepared prep = prepare(frames, p, pp);
+    const Prepared prep = prepare(std::move(frames), p, pp);
     out.prepare_s = seconds_since(t0);
     t0 = std::chrono::steady_clock::now();
     out.result = search(prep, p, sp);
     out.search_s = seconds_since(t0);
     out.profile = profile_text(prep, out.result, out.load_s);
+    for (const auto& st : prep.timings) out.memory_mb = std::max(out.memory_mb, st.rss_mb);
+    for (const auto& st : out.result.timings) out.memory_mb = std::max(out.memory_mb, st.rss_mb);
     const SearchResult& r = out.result;
 
     // ---- known objects

@@ -149,6 +149,52 @@ Inside the stacking, accumulation is now 82 % and coverage + maximum 18 %. The
 next gains are the cheaper null calibration (item 2) and, for long sequences, the
 leave-out median (item 4); memory (item 3) is unchanged at 2.1 GB.
 
+## After step 4: memory layout (0.6.0)
+
+Item 3. In 0.5 a search held six copies of the sequence at its peak: the frames
+as loaded; the background-subtracted frames; the residuals (frame − background −
+static sky); the matched-filtered frames; and, during each null run, a second set
+of residuals and filtered frames. Now:
+
+* **Residuals are dropped as soon as each frame is filtered** (the noise and
+  scatter maps are computed first). Only three things used them later: the edge
+  test, the photometry cut-outs and the GUI's residual view. The edge test now
+  reads blank pixels from the background-subtracted frames and the static sky,
+  which is exactly equivalent. The photometry cut-outs recompute the residuals of
+  the few pixels they need with the same leave-out median, so the results are
+  bit-identical. The GUI and `fainttrail stack` keep the residuals
+  (`SearchParams::keep_residuals`).
+* **The null runs keep only their filtered frames**, and their residuals are also
+  released one frame at a time.
+* **`prepare(std::move(frames))` takes over the loaded pixel buffers** instead of
+  copying them; the CLI, the GUI and `fainttrail regress` use it.
+* **Freed memory goes back to the system.** With glibc, large freed blocks stayed
+  with the process: glibc raises its mmap threshold after a large block is freed,
+  so later frame-sized buffers came from the heap and were never returned. The CLI
+  and GUI call `tune_allocator_for_images()` at start-up, which fixes the threshold
+  at 1 MB; the library returns freed heap memory after preparation and between
+  null runs. A host application embedding the library can call the same function.
+* `--profile` shows the resident memory after every stage, and `fainttrail
+  regress` reports each case's memory (also as a `memory_mb` column in `--report`).
+
+Peak resident memory, 0.5 → 0.6, with identical candidate lists (compared
+byte for byte, including fluxes) and all regression cases passing in strict mode:
+
+| case | 0.5 | 0.6 | change |
+|---|---:|---:|---:|
+| Leo Triplet (20 × 2328 × 1760, 328 MB of frames) | 2073 MB | 1148 MB | −45 % |
+| Mariekebaan (82 × 695 × 519, 118 MB) | 701 MB | 365 MB | −48 % |
+| Ceres (11 × 1391 × 1039, 64 MB) | 443 MB | 261 MB | −41 % |
+
+Run time is unchanged (Leo: 188 s for both builds on the same day).
+
+The peak is now during a null run's preprocessing: the background-subtracted
+and filtered frames of the real data (2 copies), plus that run's residuals while
+they are being filtered (1 copy), plus working buffers. After the search, 2
+copies remain. The unbinned Leo sequence (4656 × 3520) would now need about
+4.6 GB instead of 8.3 GB. Going below 3 copies needs spatial tiling (part 3 of
+step 4).
+
 ## Reproducing
 
 ```sh
