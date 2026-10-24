@@ -12,8 +12,8 @@ baseline    = baselines/leo-triplet-cut.csv
 
 [expect]
 max_unexpected = 0
-threshold_min  = 9.5
-threshold_max  = 13.0
+threshold_min  = 5.5
+threshold_max  = 7.5
 
 [object (21996) 1999 XP31]
 source  = MPChecker (geocentric) position 11 18 26.6 +13 45 01 at 2016-11-30 03:52:23 UTC

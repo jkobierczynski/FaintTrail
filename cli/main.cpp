@@ -54,6 +54,8 @@ search options
   -o FILE                   candidates CSV (default candidates.csv)
   --tracklets FILE          per-frame positions of the passing candidates
   --profile                 time per pipeline stage and stacking throughput
+  --null-model M            tail model of the threshold calibration: gauss
+                            (default) or linear (FaintTrail <= 0.7)
   --tile N                  search in tiles of N x N px (same result, less memory)
   --max-memory MB           memory budget; tiles are used automatically when the
                             sequence would not fit (default: 60 % of the RAM)
@@ -209,6 +211,8 @@ SearchParams search_params(const Args& a, const std::vector<Wcs>& wcs) {
     p.weight_scatter = a.num("--weight-scatter", p.weight_scatter);
     p.threads = a.integer("--threads", p.threads);
     p.backend = a.str("--backend", p.backend);
+    p.null_model = a.str("--null-model", p.null_model);
+    if (p.null_model != "gauss" && p.null_model != "linear") throw std::runtime_error("--null-model must be gauss or linear");
     p.seed = static_cast<std::uint64_t>(a.num("--seed", static_cast<double>(p.seed)));
     return p;
 }

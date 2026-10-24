@@ -1,3 +1,3 @@
 # fainttrail candidates; pixel coordinates are FITS 1-based at the reference epoch
-# t_ref_mjd=56793.00398728 t_ref_utc=2014-05-16T00:05:44.50 threshold_snr=6.811 method=null-fit velocities=2300 dv_pxh=22.571 fwhm_px=3.000
+# t_ref_mjd=56793.00398728 t_ref_utc=2014-05-16T00:05:44.50 threshold_snr=6.419 method=null-fit gauss velocities=2300 dv_pxh=22.571 fwhm_px=3.000
 id,ok,flags,x,y,pos_err_px,vx_pxh,vy_pxh,vel_err_pxh,snr,snr_coarse,snr_half1,snr_half2,max_frame_fraction,false_alarms_per_run,flux,mag_inst,ra_deg,dec_deg,rate_arcsec_min,pa_deg

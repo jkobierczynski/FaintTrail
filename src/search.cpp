@@ -133,6 +133,82 @@ TrackEval track_snr(const Prepared& p, double x, double y, double vx, double vy,
     return e;
 }
 
+// Field edge: in registered frames the blank border moves with the drift; tracks
+// that touch it in more than a few frames pick up edge residuals.
+bool edge_flag(const Prepared& p, double bx, double by, double bvx, double bvy) {
+    const int r = static_cast<int>(std::ceil(2.0 * p.fwhm_px)) + 1;
+    int near_blank = 0, total = 0;
+    for (int i = 0; i < p.nframes; ++i) {
+        const double t = p.t_h[static_cast<std::size_t>(i)];
+        const int xi = static_cast<int>(std::lround(bx + bvx * t)), yi = static_cast<int>(std::lround(by + bvy * t));
+        // a residual pixel is blank exactly where the background-subtracted frame or
+        // the static sky is undefined (see build_stage)
+        const Image& sub = detail::sub_frames(p)[static_cast<std::size_t>(i)];
+        ++total;
+        bool blank = false;
+        for (int dy = -r; dy <= r && !blank; ++dy)
+            for (int dx = -r; dx <= r; ++dx) {
+                if (!sub.inside(xi + dx, yi + dy) || !std::isfinite(sub.at(xi + dx, yi + dy)) ||
+                    !std::isfinite(p.static_sky.at(xi + dx, yi + dy))) {
+                    blank = true;
+                    break;
+                }
+            }
+        near_blank += blank;
+    }
+    return total > 0 && near_blank > std::max(1, total / 10);
+}
+
+// Detector-fixed: with registration offsets known, compare the linear sky track
+// with the hypothesis "fixed on the sensor" (warm pixel or defect carried along by
+// the registration, which follows the mount's drift and periodic error). If a
+// fixed detector position explains the signal about as well, reject.
+bool detector_flag(const Prepared& p, double bx, double by, double bvx, double bvy, double track_snr_all) {
+    if (static_cast<int>(p.reg_dx.size()) != p.nframes) return false;
+    double mx = 0, my = 0;
+    for (int i = 0; i < p.nframes; ++i) {
+        const double t = p.t_h[static_cast<std::size_t>(i)];
+        mx += bx + bvx * t + p.reg_dx[static_cast<std::size_t>(i)];
+        my += by + bvy * t + p.reg_dy[static_cast<std::size_t>(i)];
+    }
+    mx /= p.nframes;
+    my /= p.nframes;
+    auto fixed_snr = [&](double dxp, double dyp) {
+        double sum = 0.0;
+        int count = 0;
+        for (int i = 0; i < p.nframes; ++i) {
+            const float v = detail::bilinear(p.filtered[static_cast<std::size_t>(i)], dxp - p.reg_dx[static_cast<std::size_t>(i)],
+                                             dyp - p.reg_dy[static_cast<std::size_t>(i)]);
+            if (!std::isfinite(v)) continue;
+            sum += v;
+            ++count;
+        }
+        return count >= 3 ? sum / std::sqrt(static_cast<double>(count)) : 0.0;
+    };
+    double best_fixed = 0.0;
+    const double span = std::max(2.0, 2.0 * p.fwhm_px);
+    for (double dy = -span; dy <= span; dy += 0.5)
+        for (double dx = -span; dx <= span; dx += 0.5) best_fixed = std::max(best_fixed, fixed_snr(mx + dx, my + dy));
+    return best_fixed >= 0.8 * track_snr_all;
+}
+
+// The artefact tests (single, edge, detector) at a peak's grid position and
+// motion, without refinement: used to keep artefacts out of the null tail.
+bool is_artefact_peak(const Prepared& p, const Peak& pk, const std::pair<double, double>& v, const SearchParams& params) {
+    std::vector<double> per_frame;
+    const TrackEval all = track_snr(p, pk.x, pk.y, v.first, v.second, 0, &per_frame);
+    double pos_sum = 0.0, maxc = 0.0;
+    for (double x : per_frame) {
+        if (!std::isfinite(x)) continue;
+        pos_sum += std::max(0.0, x);
+        maxc = std::max(maxc, x);
+    }
+    const double frac = pos_sum > 0.0 ? maxc / pos_sum : 1.0;
+    if (p.nframes >= 8 && frac > params.max_frame_fraction) return true;
+    if (edge_flag(p, pk.x, pk.y, v.first, v.second)) return true;
+    return detector_flag(p, pk.x, pk.y, v.first, v.second, all.snr);
+}
+
 Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, double>& v0, double dv,
                  const SearchParams& params) {
     Candidate c;
@@ -242,63 +318,8 @@ Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, doub
     if (c.snr_half1 < half_min || c.snr_half2 < half_min) flags.push_back("half");
     if (p.nframes >= 8 && c.max_frame_fraction > params.max_frame_fraction) flags.push_back("single");
     if (inside > 0 && masked > inside / 2) flags.push_back("masked");
-    // field edge: in registered frames the blank border moves with the drift; tracks
-    // that touch it in more than a few frames pick up edge residuals
-    {
-        const int r = static_cast<int>(std::ceil(2.0 * p.fwhm_px)) + 1;
-        int near_blank = 0, total = 0;
-        for (int i = 0; i < p.nframes; ++i) {
-            const double t = p.t_h[static_cast<std::size_t>(i)];
-            const int xi = static_cast<int>(std::lround(bx + bvx * t)), yi = static_cast<int>(std::lround(by + bvy * t));
-            // a residual pixel is blank exactly where the background-subtracted frame or
-            // the static sky is undefined (see build_stage)
-            const Image& sub = p.sub[static_cast<std::size_t>(i)];
-            ++total;
-            bool blank = false;
-            for (int dy = -r; dy <= r && !blank; ++dy)
-                for (int dx = -r; dx <= r; ++dx) {
-                    if (!sub.inside(xi + dx, yi + dy) || !std::isfinite(sub.at(xi + dx, yi + dy)) ||
-                        !std::isfinite(p.static_sky.at(xi + dx, yi + dy))) {
-                        blank = true;
-                        break;
-                    }
-                }
-            near_blank += blank;
-        }
-        if (total > 0 && near_blank > std::max(1, total / 10)) flags.push_back("edge");
-    }
-    // detector-fixed: with registration offsets known, compare the linear sky track
-    // with the hypothesis "fixed on the sensor" (warm pixel or defect carried along by
-    // the registration, which follows the mount's drift and periodic error). If a
-    // fixed detector position explains the signal about as well, reject.
-    if (static_cast<int>(p.reg_dx.size()) == p.nframes) {
-        double mx = 0, my = 0;
-        for (int i = 0; i < p.nframes; ++i) {
-            const double t = p.t_h[static_cast<std::size_t>(i)];
-            mx += bx + bvx * t + p.reg_dx[static_cast<std::size_t>(i)];
-            my += by + bvy * t + p.reg_dy[static_cast<std::size_t>(i)];
-        }
-        mx /= p.nframes;
-        my /= p.nframes;
-        auto fixed_snr = [&](double dxp, double dyp) {
-            double sum = 0.0;
-            int count = 0;
-            for (int i = 0; i < p.nframes; ++i) {
-                const float v = detail::bilinear(p.filtered[static_cast<std::size_t>(i)],
-                                                 dxp - p.reg_dx[static_cast<std::size_t>(i)],
-                                                 dyp - p.reg_dy[static_cast<std::size_t>(i)]);
-                if (!std::isfinite(v)) continue;
-                sum += v;
-                ++count;
-            }
-            return count >= 3 ? sum / std::sqrt(static_cast<double>(count)) : 0.0;
-        };
-        double best_fixed = 0.0;
-        const double span = std::max(2.0, 2.0 * p.fwhm_px);
-        for (double dy = -span; dy <= span; dy += 0.5)
-            for (double dx = -span; dx <= span; dx += 0.5) best_fixed = std::max(best_fixed, fixed_snr(mx + dx, my + dy));
-        if (best_fixed >= 0.8 * all.snr) flags.push_back("detector");
-    }
+    if (edge_flag(p, bx, by, bvx, bvy)) flags.push_back("edge");
+    if (detector_flag(p, bx, by, bvx, bvy, all.snr)) flags.push_back("detector");
     if (std::hypot(bvx, bvy) > params.vmax_pxh - 0.5 * dv) flags.push_back("vedge");
     if (std::hypot(bvx, bvy) < 2.0 * p.fwhm_px / p.span_h) flags.push_back("slow");
     for (std::size_t i = 0; i < flags.size(); ++i) c.flags += (i ? "," : "") + flags[i];
@@ -347,7 +368,73 @@ void sky_coordinates(const Prepared& p, Candidate& c) {
 }
 
 // Fit log N(>s) = a - b s to the pooled tail of the null peaks.
-bool fit_null_tail(std::vector<float> pooled, int runs, double& a, double& b) {
+// Tail of the peaks of a smooth Gaussian random field: by the Euler-characteristic
+// heuristic the expected number of local maxima above u falls like
+// u^(D-1) exp(-u^2 / 2) for a unit-variance field in D dimensions. The null
+// detection map is the maximum over a family of correlated Gaussian fields
+// (position and motion), with a variance that is not exactly 1 after the robust
+// normalisation, so the power k and the variance are fitted:
+//   log N(>u) = a + k log u - inv_s2 u^2 / 2
+// by least squares on the top `max_per_run` peaks per run (all ranks from 1).
+bool fit_null_tail_gauss(std::vector<float> pooled, double runs, double& a, double& k, double& inv_s2,
+                         double max_per_run) {
+    std::sort(pooled.begin(), pooled.end(), std::greater<float>());
+    const std::size_t m = std::min(pooled.size(), static_cast<std::size_t>(max_per_run * runs));
+    if (m < 8) return false;
+    // normal equations for [1, log u, -u^2/2]
+    double S[3][3] = {{0}}, R[3] = {0};
+    for (std::size_t j = 0; j < m; ++j) {
+        const double u = pooled[j];
+        if (!(u > 0.0)) return false;
+        const double f[3] = {1.0, std::log(u), -0.5 * u * u};
+        const double y = std::log(static_cast<double>(j + 1) / runs);
+        for (int r = 0; r < 3; ++r) {
+            R[r] += f[r] * y;
+            for (int c = 0; c < 3; ++c) S[r][c] += f[r] * f[c];
+        }
+    }
+    // solve the 3x3 system (Gaussian elimination with partial pivoting)
+    double A[3][4];
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) A[r][c] = S[r][c];
+        A[r][3] = R[r];
+    }
+    for (int c = 0; c < 3; ++c) {
+        int piv = c;
+        for (int r = c + 1; r < 3; ++r)
+            if (std::fabs(A[r][c]) > std::fabs(A[piv][c])) piv = r;
+        if (std::fabs(A[piv][c]) < 1e-300) return false;
+        for (int q = 0; q < 4; ++q) std::swap(A[c][q], A[piv][q]);
+        for (int r = 0; r < 3; ++r) {
+            if (r == c) continue;
+            const double f = A[r][c] / A[c][c];
+            for (int q = c; q < 4; ++q) A[r][q] -= f * A[c][q];
+        }
+    }
+    a = A[0][3] / A[0][0];
+    k = A[1][3] / A[1][1];
+    inv_s2 = A[2][3] / A[2][2];
+    return std::isfinite(a) && std::isfinite(k) && inv_s2 > 0.0 && std::isfinite(inv_s2);
+}
+
+double gauss_tail_log_rate(double a, double k, double inv_s2, double u) {
+    return a + k * std::log(u) - 0.5 * inv_s2 * u * u;
+}
+
+// Level where the fitted tail reaches `rate` peaks per run, on its falling branch.
+double gauss_tail_level(double a, double k, double inv_s2, double rate) {
+    const double lt = std::log(rate);
+    double lo = std::max(1.0, k > 0.0 ? std::sqrt(k / inv_s2) : 1.0), hi = 100.0;
+    if (gauss_tail_log_rate(a, k, inv_s2, lo) <= lt) return lo;
+    for (int it = 0; it < 200; ++it) {
+        const double mid = 0.5 * (lo + hi);
+        if (gauss_tail_log_rate(a, k, inv_s2, mid) > lt) lo = mid;
+        else hi = mid;
+    }
+    return hi;
+}
+
+bool fit_null_tail(std::vector<float> pooled, double runs, double& a, double& b) {
     std::sort(pooled.begin(), pooled.end(), std::greater<float>());
     std::vector<double> xs, ys;
     for (std::size_t j = 0; j < pooled.size(); ++j) {
@@ -398,12 +485,19 @@ void set_threshold(const Prepared& p, const SearchParams& params, std::size_t n_
         res.threshold_method = "fixed";
     } else if (runs > 0) {
         res.null_peaks.assign(pooled.begin(), pooled.end());
-        double a = 0, b = 0;
-        if (fit_null_tail(pooled, runs, a, b)) {
+        const double target = std::max(1e-6, params.target_false_per_run);
+        double a = 0, b = 0, k = 0, inv_s2 = 0;
+        if (params.null_model == "gauss" && fit_null_tail_gauss(pooled, runs, a, k, inv_s2, 3000.0)) {
+            res.null_a = a;
+            res.null_k = k;
+            res.null_inv_s2 = inv_s2;
+            res.threshold_snr = gauss_tail_level(a, k, inv_s2, target);
+            res.threshold_method = "null-fit gauss";
+        } else if (fit_null_tail(pooled, runs, a, b)) {
             res.null_a = a;
             res.null_b = b;
-            res.threshold_snr = (a - std::log(std::max(1e-6, params.target_false_per_run))) / b;
-            res.threshold_method = "null-fit";
+            res.threshold_snr = (a - std::log(target)) / b;
+            res.threshold_method = "null-fit linear";
         } else {
             const float mx = pooled.empty() ? 0.0f : *std::max_element(pooled.begin(), pooled.end());
             res.threshold_snr = mx + 0.5;
@@ -476,7 +570,7 @@ void finish_candidates(const Prepared& meta, std::vector<RefinedCandidate> rc, S
         if (drop[j]) continue;
         Candidate c = rc[j].c;
         finalise_flags(c);
-        c.false_alarms_per_run = res.null_b > 0.0 ? std::exp(res.null_a - res.null_b * c.snr_coarse) : 0.0;
+        c.false_alarms_per_run = expected_null_peaks(res, c.snr_coarse);
         sky_coordinates(p, c);
         res.candidates.push_back(c);
     }
@@ -485,6 +579,28 @@ void finish_candidates(const Prepared& meta, std::vector<RefinedCandidate> rc, S
         return a.snr > b.snr;
     });
     for (std::size_t i = 0; i < res.candidates.size(); ++i) res.candidates[i].id = static_cast<int>(i + 1);
+}
+
+bool is_artefact(const Candidate& c) {
+    std::size_t s = 0;
+    while (s <= c.flags.size() && !c.flags.empty()) {
+        const std::size_t e = c.flags.find(',', s);
+        const std::string f = c.flags.substr(s, e == std::string::npos ? std::string::npos : e - s);
+        if (f == "edge" || f == "detector" || f == "single") return true;
+        if (e == std::string::npos) break;
+        s = e + 1;
+    }
+    return false;
+}
+
+void pool_null_peaks(const std::vector<Peak>& peaks, const std::vector<char>& artefact, std::vector<float>& pooled) {
+    for (std::size_t k = 0; k < peaks.size(); ++k)
+        if (k >= artefact.size() || !artefact[k]) pooled.push_back(peaks[k].snr);
+}
+
+int null_tested_count(const SearchParams& params, std::size_t npeaks) {
+    if (params.null_model != "gauss" || params.null_tested <= 0) return 0;
+    return static_cast<int>(std::min<std::size_t>(npeaks, static_cast<std::size_t>(params.null_tested)));
 }
 
 RefinedCandidate refine_with_contrib(const Prepared& p, const Peak& pk, const std::pair<double, double>& v0, double dv,
@@ -496,6 +612,12 @@ RefinedCandidate refine_with_contrib(const Prepared& p, const Peak& pk, const st
 }
 
 }  // namespace detail
+
+double expected_null_peaks(const SearchResult& res, double snr) {
+    if (res.null_inv_s2 > 0.0 && snr > 0.0) return std::exp(detail::gauss_tail_log_rate(res.null_a, res.null_k, res.null_inv_s2, snr));
+    if (res.null_b > 0.0) return std::exp(res.null_a - res.null_b * snr);
+    return 0.0;
+}
 
 SearchResult search(const Prepared& p, const SearchParams& params, const ProgressFn& progress) {
     using namespace detail;
@@ -544,7 +666,15 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
         PassOutput null = run_pass(*backend, q, grid, t, params, progress, share * (k + 1), share * (k + 2), stage);
         sw.lap("stack (null)");
         for (const auto& st : null.timings) res.timings.push_back({"  " + st.name, st.seconds});
-        for (const auto& pk : find_peaks(null, 3.0f, nms, edge, 20000)) pooled.push_back(pk.snr);
+        const std::vector<Peak> npk = find_peaks(null, 3.0f, nms, edge, 20000);
+        // artefact test of the strongest null peaks (the real search rejects these)
+        std::vector<char> art(static_cast<std::size_t>(null_tested_count(params, npk.size())), 0);
+#pragma omp parallel for num_threads(nt) schedule(dynamic)
+        for (int j = 0; j < static_cast<int>(art.size()); ++j) {
+            const Peak& pk = npk[static_cast<std::size_t>(j)];
+            art[static_cast<std::size_t>(j)] = is_artefact_peak(q, pk, grid[static_cast<std::size_t>(pk.vidx)], params);
+        }
+        pool_null_peaks(npk, art, pooled);
         sw.lap("peaks (null)");
         // the null run's frames are released when q goes out of scope
     }

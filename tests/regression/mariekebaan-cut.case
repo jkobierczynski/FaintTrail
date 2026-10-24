@@ -15,8 +15,8 @@ baseline    = baselines/mariekebaan-cut.csv
 
 [expect]
 max_unexpected = 0
-threshold_min  = 7.0
-threshold_max  = 9.5
+threshold_min  = 6.5
+threshold_max  = 8.5
 
 [object (12631) Mariekebaan]
 source  = ephemeris: n-body integration of the JPL SBDB orbit, topocentric for the observing site (15 39 54.40 -06 37 08.7); confirmed by the observer

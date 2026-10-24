@@ -34,8 +34,11 @@ static SimParams base_sim(std::uint64_t seed, int size) {
     return s;
 }
 
+static std::string g_null_model = "gauss";
+
 static SearchParams base_search() {
     SearchParams p;
+    p.null_model = g_null_model;
     p.vmin_pxh = 7;
     p.vmax_pxh = 44;
     return p;
@@ -47,15 +50,17 @@ int main(int argc, char** argv) {
         return 1;
     }
     const fs::path out = argv[1];
-    bool quick = false, only_astrometry = false;
+    bool quick = false, only_astrometry = false, only_completeness = false;
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--quick") quick = true;
         if (std::string(argv[i]) == "--astrometry") only_astrometry = true;
+        if (std::string(argv[i]) == "--null-model" && i + 1 < argc) g_null_model = argv[++i];
+        if (std::string(argv[i]) == "--completeness") only_completeness = true;
     }
     fs::create_directories(out);
 
     // ---------------------------------------------------------- 1. false alarms
-    if (!only_astrometry) {
+    if (!only_astrometry && !only_completeness) {
         std::ofstream f(out / "false_alarms.csv");
         f << "target_false_per_run,runs,passing_candidates,observed_per_run,threshold_mean\n";
         const int runs = quick ? 8 : 40;
@@ -100,7 +105,7 @@ int main(int argc, char** argv) {
     }
 
     // ---------------------------------------------------------- 3. astrometry
-    {
+    if (!only_completeness) {
         std::ofstream f(out / "astrometry.csv");
         f << "seed,expected_snr,snr,dx_px,dy_px,pos_err_px,dvx_pxh,dvy_pxh,vel_err_pxh,rate_pxh\n";
         const int seeds = quick ? 2 : 8;

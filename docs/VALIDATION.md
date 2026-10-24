@@ -14,19 +14,22 @@ PSF FWHM 3 px, sky 40 e⁻/px/s, read noise 3 e⁻, motion range 7–44 px/h
 
 ## False alarms
 
-40 pure-noise sequences of 256 × 256 px (stars, hot pixels and cosmic rays, no
-moving objects) were searched at three requested false-alarm rates:
+200 pure-noise sequences of 256 × 256 px (stars, hot pixels and cosmic rays, no
+moving objects) were searched with the whole pipeline at four requested
+false-alarm rates (`tools/false_alarm_study.cpp`):
 
-| requested per search | passing candidates | observed per search | mean threshold S/N |
+| requested per search | observed per search (0.8) | threshold S/N | observed with the 0.7 calibration |
 |---:|---:|---:|---:|
-| 0.02 (default) | 0 in 40 runs | < 0.025 | 7.02 |
-| 0.2 | 10 in 40 runs | 0.25 | 6.42 |
-| 1.0 | 56 in 40 runs | 1.40 | 5.99 |
+| 0.02 (default) | 0.020 (4 in 200) | 6.65 | 0.005 |
+| 0.1 | 0.160 | 6.36 | 0.060 |
+| 0.2 | 0.225 | 6.23 | 0.135 |
+| 1.0 | 1.02 | 5.90 | 0.68 |
 
-At the default the calibration holds: about 0.8 false detections were expected
-and none occurred. At loose settings the observed rate is 25–40 % above the
-requested one. The tail fit is slightly optimistic there, so treat a looser
-setting as a lower bound on the real false-alarm rate.
+Since 0.8 the calibration delivers the requested rate; the straight-line tail fit
+used before was conservative by a data-dependent amount (a quarter of the
+requested rate here, as little as 4 % on another field). See
+[CALIBRATION.md](CALIBRATION.md) for the study, including why artefacts must be
+screened out of the null runs on real data.
 
 An earlier version reused the real-time preprocessing for the time-shuffled null
 searches. That produced 12 false detections in 30 runs at a requested 0.02 per
@@ -133,6 +136,14 @@ covered 7084 trial motions; the null-calibrated threshold was S/N 11.0.
 * The only other known object in the region, (182337) 2001 PV54 at V 20.6, is about
   four times fainter, which puts it near S/N 4 here, below the threshold; it was
   correctly not reported.
+
+**Update (0.8).** With the corrected threshold calibration (artefacts screened out
+of the null runs, curved tail fit; see [CALIBRATION.md](CALIBRATION.md)) the
+threshold for this field fell from S/N 11.0 to 7.1. 1999 XP31 is still found, and a
+second candidate passes: S/N 8.4 at 11h19m33.5s +13°19′21″ (2016-11-30 03:52:23
+UTC), 26″/h at position angle 113°, consistent in both halves of the sequence
+(6.1 / 5.8). It lies outside the 15′ MPChecker query made for 1999 XP31 and is not
+yet identified.
 
 A third real set (Ceres field, 2014-05-16, 11 frames over 5.3 min) is too short
 for synthetic tracking: nothing in it moves two PSF widths. It gave no false

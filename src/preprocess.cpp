@@ -197,7 +197,8 @@ Image residual_patch(const Prepared& p, int frame, int x0, int y0, int w, int h)
                 if (r.inside(x0 + x, y0 + y)) out.at(x, y) = r.at(x0 + x, y0 + y);
         return out;
     }
-    if (static_cast<int>(p.sub.size()) != p.nframes || static_cast<int>(p.time_rank.size()) != p.nframes)
+    const std::vector<Image>& subs = sub_frames(p);
+    if (static_cast<int>(subs.size()) != p.nframes || static_cast<int>(p.time_rank.size()) != p.nframes)
         throw std::runtime_error("residuals are neither kept nor recomputable (no background-subtracted frames)");
     std::vector<std::pair<float, int>> sorted;
     std::vector<float> vals(static_cast<std::size_t>(p.nframes)), res(static_cast<std::size_t>(p.nframes));
@@ -205,7 +206,7 @@ Image residual_patch(const Prepared& p, int frame, int x0, int y0, int w, int h)
         for (int x = 0; x < w; ++x) {
             if (x0 + x < 0 || y0 + y < 0 || x0 + x >= p.width || y0 + y >= p.height) continue;
             const std::size_t idx = static_cast<std::size_t>(y0 + y) * p.width + (x0 + x);
-            static_sky_column(p.sub, idx, p.time_rank, p.static_exclude, sorted, vals, res.data());
+            static_sky_column(subs, idx, p.time_rank, p.static_exclude, sorted, vals, res.data());
             out.at(x, y) = res[static_cast<std::size_t>(frame)];
         }
     return out;
@@ -487,6 +488,7 @@ Prepared with_times(const Prepared& base, const std::vector<double>& t_h, const 
     SearchParams np = params;
     np.keep_residuals = false;  // the null runs only need the filtered frames
     build_stage(base.sub, q, np, {}, false);
+    q.shared_sub = &sub_frames(base);
     return q;
 }
 

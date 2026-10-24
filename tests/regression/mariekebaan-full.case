@@ -12,8 +12,8 @@ wcs_from = ${FAINTTRAIL_REGRESSION_DATA}/mariekebaan-stack-solved.fits
 
 [expect]
 max_unexpected = 0
-threshold_min  = 6.5
-threshold_max  = 8.5
+threshold_min  = 6.3
+threshold_max  = 7.8
 
 [object (12631) Mariekebaan]
 source  = ephemeris: n-body integration of the JPL SBDB orbit, topocentric for the observing site (15 39 54.40 -06 37 08.7); confirmed by the observer

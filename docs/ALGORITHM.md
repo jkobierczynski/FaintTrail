@@ -64,11 +64,20 @@ one. (Reusing the real-time preprocessing would be wrong: the leave-out static s
 correlates the noise of neighbouring frames, and only a full rerun reproduces that
 correlation in the null.)
 
-The peaks of the null searches give the tail of the noise distribution. A straight
-line is fitted to `log N(>S)` against `S` for 0.67 to 30 noise peaks per search,
-and the threshold is set where the line predicts `target_false_per_run` peaks per
-search (default 0.02, one false detection in fifty searches). Every candidate also
-reports the expected number of noise peaks at least as strong as itself.
+The peaks of the null searches give the tail of the noise distribution. Defects
+that sit still on the frames survive the time shuffle, so the strongest null peaks
+of each run (the top 3000) are first screened with the artefact tests of section 4
+(single-frame, edge, detector) at their grid position and motion; artefacts are
+left out, because the same tests reject them in the real search. The remaining
+peaks follow the tail of the local maxima of a smooth Gaussian random field,
+
+    log N(>S) = a + k log S - S^2 / (2 sigma^2),
+
+which is fitted by least squares to the top 3000 peaks per run. The threshold is
+set where the fit predicts `target_false_per_run` noise peaks per search (default
+0.02, one false detection in fifty searches). Every candidate also reports the
+expected number of noise peaks at least as strong as itself. The study behind this
+choice, and the straight-line fit it replaces, are in [CALIBRATION.md](CALIBRATION.md).
 
 ## 4. Refinement and tests
 

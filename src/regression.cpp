@@ -174,6 +174,7 @@ RegressionCase load_regression_case(const std::string& path) {
             else if (key == "wcs_from") c.wcs_from = resolve(base, val);
             else if (key == "wcs_scale") c.wcs_scale = num();
             else if (key == "tile") c.tile = static_cast<int>(num());
+            else if (key == "null_model") p.null_model = val;
             else throw std::runtime_error(where + ": unknown search key '" + key + "'");
         } else if (section == "expect") {
             if (key == "max_unexpected") c.max_unexpected = static_cast<int>(num());

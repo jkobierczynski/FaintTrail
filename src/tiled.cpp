@@ -562,7 +562,36 @@ SearchResult search_tiled(const FrameSource& src, const SearchParams& params_in,
             res.max_snr = std::move(full.max_snr);
         } else {
             const int nms = std::max(2, static_cast<int>(std::lround(meta.fwhm_px)));
-            for (const auto& pk : find_peaks(full, 3.0f, nms, edge, 20000)) pooled.push_back(pk.snr);
+            const std::vector<Peak> npk = find_peaks(full, 3.0f, nms, edge, 20000);
+            // artefact test of the strongest null peaks, on tiles with the refinement halo
+            std::vector<char> art(static_cast<std::size_t>(null_tested_count(params, npk.size())), 0);
+            if (!art.empty()) {
+                const Geometry g = geometry(meta, grid, dv, meta.fwhm_px);
+                StageGlobals gl;
+                gl.sigma = &sigma;
+                gl.filter_sg = &filter_sg;
+                for (const auto& c : cores) {
+                    std::vector<int> mine;
+                    for (std::size_t j = 0; j < art.size(); ++j)
+                        if (npk[j].x >= c.x0 && npk[j].x < c.x1 && npk[j].y >= c.y0 && npk[j].y < c.y1)
+                            mine.push_back(static_cast<int>(j));
+                    if (mine.empty()) continue;
+                    const Rect r = grow_clip(c, g.refine_halo, W, H);
+                    Prepared q = region_prepared(r, t);
+                    q.sub = load_sub(r);
+                    const StageRegion sr = stage_region(r, c);
+                    build_stage(q.sub, q, params, {}, false, StageMode::Full, &sr, &gl, nullptr);
+#pragma omp parallel for num_threads(nt) schedule(dynamic)
+                    for (int m = 0; m < static_cast<int>(mine.size()); ++m) {
+                        const std::size_t j = static_cast<std::size_t>(mine[static_cast<std::size_t>(m)]);
+                        Peak local = npk[j];
+                        local.x -= r.x0;
+                        local.y -= r.y0;
+                        art[j] = is_artefact_peak(q, local, grid[static_cast<std::size_t>(npk[j].vidx)], params);
+                    }
+                }
+            }
+            pool_null_peaks(npk, art, pooled);
         }
         sw.lap(real ? "peaks (real)" : "peaks (null)");
     }

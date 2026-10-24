@@ -17,4 +17,4 @@ vmax = 600
 [expect]
 max_unexpected = 0
 threshold_min  = 5.5
-threshold_max  = 8.5
+threshold_max  = 7.5

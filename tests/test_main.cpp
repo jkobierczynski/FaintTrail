@@ -215,7 +215,7 @@ static void test_blind_search_recovers() {
     }
     const SimResult sim = simulate(s, movers);
     const SearchResult res = search(sim.frames, quick_search());
-    CHECK(res.threshold_method == "null-fit" || res.threshold_method == "null-quantile");
+    CHECK(res.threshold_method == "null-fit gauss" || res.threshold_method == "null-fit linear" || res.threshold_method == "null-quantile");
     const auto matched = match(res.candidates, movers, 1.0, 2.0 * res.dv_pxh + 1.0, true);
     CHECK(matched.size() == movers.size());
     for (const auto& mr : matched) {

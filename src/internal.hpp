@@ -76,6 +76,12 @@ float static_sky_column(const std::vector<Image>& sub, std::size_t idx, const st
 // image. Copied when Prepared keeps residuals, otherwise recomputed exactly.
 Image residual_patch(const Prepared& p, int frame, int x0, int y0, int w, int h);
 
+// The background-subtracted frames of a prepared data set (a null run shares
+// those of the real data).
+inline const std::vector<Image>& sub_frames(const Prepared& p) {
+    return p.sub.empty() && p.shared_sub ? *p.shared_sub : p.sub;
+}
+
 // ---------------------------------------------------------------- search steps
 // (shared by search() and the tiled search)
 
@@ -112,6 +118,21 @@ void set_threshold(const Prepared& p, const SearchParams& params, std::size_t n_
 std::vector<Peak> select_peaks(const std::vector<Peak>& peaks, double threshold, const SearchParams& params);
 void finish_candidates(const Prepared& meta, std::vector<RefinedCandidate> rc, SearchResult& res);
 void sky_coordinates(const Prepared& p, Candidate& c);
+// Artefact flags (edge, detector, single): such null peaks are left out of the tail fit.
+bool is_artefact(const Candidate& c);
+// The same artefact tests at a peak's grid position and motion, without refinement.
+bool is_artefact_peak(const Prepared& p, const Peak& pk, const std::pair<double, double>& v, const SearchParams& params);
+// Number of strongest null peaks per run to test for artefacts.
+int null_tested_count(const SearchParams& params, std::size_t npeaks);
+// Pool the null peaks of one run, leaving out those marked as artefacts.
+void pool_null_peaks(const std::vector<Peak>& peaks, const std::vector<char>& artefact, std::vector<float>& pooled);
+// Fit log N(>s) = a - b s to the pooled null peaks of `runs` null runs (fractional
+// when the runs covered only part of the field).
+bool fit_null_tail(std::vector<float> pooled, double runs, double& a, double& b);
+bool fit_null_tail_gauss(std::vector<float> pooled, double runs, double& a, double& k, double& inv_s2,
+                         double max_per_run);
+double gauss_tail_log_rate(double a, double k, double inv_s2, double u);
+double gauss_tail_level(double a, double k, double inv_s2, double rate);
 
 // Re-run the time-dependent preprocessing with different frame times
 // (used for the time-permuted null searches).

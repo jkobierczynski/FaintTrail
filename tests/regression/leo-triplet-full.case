@@ -12,8 +12,8 @@ wcs_from = ${FAINTTRAIL_REGRESSION_DATA}/leo-triplet-stack-solved.fits
 
 [expect]
 max_unexpected = 0
-threshold_min  = 9.5
-threshold_max  = 13.0
+threshold_min  = 6.3
+threshold_max  = 8.0
 
 [object (21996) 1999 XP31]
 source  = MPChecker (geocentric) position 11 18 26.6 +13 45 01 at 2016-11-30 03:52:23 UTC
@@ -28,3 +28,19 @@ min_snr = 13.0
 ra      = 169.610833
 dec     = 13.750278
 sky_tol = 5.0
+
+# Found in 0.8 once the threshold calibration stopped counting artefacts
+# (single-frame defects, field edges) as noise
+# (threshold 11.2 -> 7.1). Not yet identified: an MPChecker query for this
+# position and time is pending. Until then it is listed here so the case checks
+# that it keeps being found; rename and cite the source once it is identified.
+[object candidate 2016-11-30 A (unidentified)]
+source  = FaintTrail 0.8 detection, S/N 8.4, halves 6.1 / 5.8; 11 19 33.5 +13 19 21 at 03:52:23 UTC; awaiting identification
+mjd     = 57722.16137731
+x       = 1089.04
+y       = 760.44
+vx      = 6.42
+vy      = 13.88
+pos_tol = 1.0
+vel_tol = 2.0
+min_snr = 7.5

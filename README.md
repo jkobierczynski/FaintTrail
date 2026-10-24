@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.7.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
+> Status: **0.8.0, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -187,6 +187,13 @@ a tile at a time, with identical results: the same run in 2 × 2 tiles needs 380
 See [docs/VALIDATION.md](docs/VALIDATION.md) for the false-alarm, completeness and
 astrometry benchmarks on simulated data, and how to reproduce them with
 `fainttrail_benchmark`.
+
+The detection threshold is calibrated with time-shuffled null searches. Since 0.8
+artefacts are screened out of the null runs and a curved Gaussian-field tail is
+fitted ([docs/CALIBRATION.md](docs/CALIBRATION.md)): the requested false-alarm rate
+is now delivered instead of a data-dependent fraction of it, the threshold is
+lower (Leo Triplet: S/N 11.2 → 7.1), and a second, still unidentified candidate
+appeared in the Leo Triplet field.
 
 Real data are covered by a regression suite ([tests/regression](tests/regression/README.md)):
 two asteroids identified in the author's captures, (12631) Mariekebaan and

@@ -49,6 +49,17 @@ struct SearchParams {
     // accepted number of noise detections per search.
     int null_runs = 3;
     double target_false_per_run = 0.02;
+    // Tail model fitted to the null peaks (docs/CALIBRATION.md):
+    //   "gauss"  log N(>s) = a + k log s - s^2 / (2 sigma^2), the tail of the peaks of
+    //            a smooth Gaussian random field, fitted to the top 3000 peaks per run
+    //   "linear" log N(>s) = a - b s fitted to the peaks between 0.67 and 30 per run
+    //            (FaintTrail <= 0.7; conservative by a data-dependent amount)
+    std::string null_model = "gauss";
+    // gauss model: the strongest null peaks of each run, as many as the fit uses, are
+    // checked with the artefact tests (edge, detector, single) at their grid position
+    // and motion, and artefacts are left out of the fit, since the same tests reject
+    // them in the real search. 0 = test none.
+    int null_tested = 3000;
     // Consistency tests.
     double max_frame_fraction = 0.25; // max share of the signal from one frame
     double half_tolerance = 3.0;      // allowed shortfall (sigma) of each half
@@ -91,6 +102,7 @@ struct Prepared {
     std::vector<double> exptime_s;
     std::vector<double> reg_dx, reg_dy; // registration offsets, empty if unknown
     std::vector<StageTime> timings;     // preprocessing stages, in order
+    const std::vector<Image>* shared_sub = nullptr;  // null runs: the real data's `sub` (not owned)
     std::vector<int> time_rank;         // rank of each frame in time (for recomputing residuals)
     int static_exclude = 0;             // frames left out on each side by the leave-out median
 };
@@ -125,9 +137,13 @@ struct TrackPoint {
 struct SearchResult {
     std::vector<Candidate> candidates; // sorted by S/N, ok ones first
     double threshold_snr = 0.0;
-    std::string threshold_method;       // "fixed", "null-fit", "null-quantile", "gaussian"
-    // Null-tail model: expected noise peaks per run above s = exp(a - b s).
+    std::string threshold_method;       // "fixed", "null-fit gauss", "null-fit linear", "null-quantile", "gaussian"
+    // Null-tail model: expected noise peaks per run above s is
+    //   exp(null_a + null_k log s - null_inv_s2 s^2 / 2)   (gauss model)
+    //   exp(null_a - null_b s)                            (linear model)
+    // see expected_null_peaks().
     double null_a = 0.0, null_b = 0.0;
+    double null_k = 0.0, null_inv_s2 = 0.0;
     std::vector<double> null_peaks;     // pooled peak S/N of the null runs
     std::size_t n_velocities = 0;
     double dv_pxh = 0.0;
@@ -147,6 +163,10 @@ struct SearchResult {
 // normalisation, masking and matched filtering. Frames must be registered.
 Prepared prepare(const std::vector<Frame>& frames, const SearchParams& params,
                  const ProgressFn& progress = {});
+
+// Expected number of noise peaks per search above `snr`, from the fitted null
+// tail (0 if the threshold was not calibrated with null runs).
+double expected_null_peaks(const SearchResult& res, double snr);
 
 // For applications (not libraries embedding FaintTrail): call once at start-up.
 // With glibc, frame-sized buffers are then always mapped separately, so memory
