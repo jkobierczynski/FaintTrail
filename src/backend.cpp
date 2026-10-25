@@ -51,30 +51,53 @@ std::unique_ptr<SearchBackend> make_backend(const std::string& name) {
 }
 
 void validate_pass(const StackPass& pass) {
-    if (!pass.frames || !pass.t_h || !pass.velocities) throw std::runtime_error("stack pass: missing input");
+    if (!pass.frames) throw std::runtime_error("stack pass: missing frames");
     const auto& f = *pass.frames;
     if (f.empty()) throw std::runtime_error("stack pass: no frames");
-    if (f.size() != pass.t_h->size()) throw std::runtime_error("stack pass: frame and time counts differ");
     for (const auto& im : f)
         if (im.width != f[0].width || im.height != f[0].height || im.size() != static_cast<std::size_t>(im.width) * im.height)
             throw std::runtime_error("stack pass: frames differ in size");
+    if (pass.shifts) {
+        const ShiftTable& s = *pass.shifts;
+        if (s.frames != static_cast<int>(f.size())) throw std::runtime_error("stack pass: shift table and frame counts differ");
+        if (s.motions < 1 || s.dx.size() != static_cast<std::size_t>(s.motions) * s.frames || s.dy.size() != s.dx.size())
+            throw std::runtime_error("stack pass: malformed shift table");
+        if (pass.velocities && static_cast<int>(pass.velocities->size()) != s.motions)
+            throw std::runtime_error("stack pass: shift table and velocity counts differ");
+    } else {
+        if (!pass.t_h || !pass.velocities) throw std::runtime_error("stack pass: missing times or velocities");
+        if (f.size() != pass.t_h->size()) throw std::runtime_error("stack pass: frame and time counts differ");
+    }
     if (pass.min_count < 1) throw std::runtime_error("stack pass: min_count must be at least 1");
+}
+
+int pass_motions(const StackPass& pass) {
+    return pass.shifts ? pass.shifts->motions : static_cast<int>(pass.velocities->size());
+}
+
+ShiftTable linear_shift_table(const std::vector<double>& t_h, const std::vector<std::pair<double, double>>& velocities) {
+    ShiftTable s;
+    s.resize(static_cast<int>(velocities.size()), static_cast<int>(t_h.size()));
+    for (int j = 0; j < s.motions; ++j)
+        for (int i = 0; i < s.frames; ++i) {
+            s.x(j, i) = static_cast<int>(std::lround(velocities[static_cast<std::size_t>(j)].first * t_h[static_cast<std::size_t>(i)]));
+            s.y(j, i) = static_cast<int>(std::lround(velocities[static_cast<std::size_t>(j)].second * t_h[static_cast<std::size_t>(i)]));
+        }
+    return s;
 }
 
 namespace {
 
-inline int shift_of(double v, double t) { return static_cast<int>(std::lround(v * t)); }
-
 // S_v at one pixel, exactly as the contract defines it. Returns false if undefined.
 bool snr_at(const StackPass& pass, std::size_t vi, int x, int y, float& out) {
     const auto& frames = *pass.frames;
-    const auto& t = *pass.t_h;
-    const auto [vx, vy] = (*pass.velocities)[vi];
     const int w = frames[0].width, h = frames[0].height;
     float sum = 0.0f;
     int c = 0;
     for (std::size_t i = 0; i < frames.size(); ++i) {
-        const int sx = x + shift_of(vx, t[i]), sy = y + shift_of(vy, t[i]);
+        int dx = 0, dy = 0;
+        pass_shift(pass, static_cast<int>(vi), static_cast<int>(i), dx, dy);
+        const int sx = x + dx, sy = y + dy;
         if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
         sum += frames[i].data[static_cast<std::size_t>(sy) * w + sx];
         ++c;
@@ -96,7 +119,7 @@ StackResult run_pass_naive(const StackPass& pass) {
         for (int x = 0; x < w; ++x) {
             float best = -std::numeric_limits<float>::infinity();
             int arg = -1;
-            for (std::size_t vi = 0; vi < pass.velocities->size(); ++vi) {
+            for (std::size_t vi = 0; vi < static_cast<std::size_t>(pass_motions(pass)); ++vi) {
                 float s;
                 if (!snr_at(pass, vi, x, y, s)) continue;
                 if (s > best) {  // strict: ties keep the lower index
@@ -120,11 +143,9 @@ StackResult run_pass_simple(const StackPass& pass) {
     const ProgressFn progress;
     validate_pass(pass);
     const auto& frames = *pass.frames;
-    const auto& t = *pass.t_h;
-    const auto& grid = *pass.velocities;
     const int w = frames[0].width, h = frames[0].height;
     const int n = static_cast<int>(frames.size());
-    const int nv = static_cast<int>(grid.size());
+    const int nv = pass_motions(pass);
     const int min_count = pass.min_count;
     const int nt = detail::thread_count(pass.threads);
 
@@ -151,13 +172,11 @@ StackResult run_pass_simple(const StackPass& pass) {
 #pragma omp for schedule(dynamic, 2)
         for (int vi = 0; vi < nv; ++vi) {
             if (cancel.load(std::memory_order_relaxed)) continue;
-            const double vx = grid[static_cast<std::size_t>(vi)].first;
-            const double vy = grid[static_cast<std::size_t>(vi)].second;
             std::fill(stack.begin(), stack.end(), 0.0f);
             std::fill(diff.begin(), diff.end(), 0);
             for (int i = 0; i < n; ++i) {  // ascending frame order, as the contract requires
-                const int dx = static_cast<int>(std::lround(vx * t[static_cast<std::size_t>(i)]));
-                const int dy = static_cast<int>(std::lround(vy * t[static_cast<std::size_t>(i)]));
+                int dx = 0, dy = 0;
+                pass_shift(pass, vi, i, dx, dy);
                 const int x0 = std::max(0, -dx), x1 = std::min(w, w - dx);
                 const int y0 = std::max(0, -dy), y1 = std::min(h, h - dy);
                 if (x0 >= x1 || y0 >= y1) continue;
@@ -248,7 +267,7 @@ BackendCheck check_backend(const StackPass& pass, const StackResult& ref, const 
             // allowed only if both velocities are defined here and give the same S/N within tolerance
             float sa = 0, sb = 0;
             const bool da = va >= 0 && snr_at(pass, static_cast<std::size_t>(va), x, y, sa);
-            const bool db = vb >= 0 && static_cast<std::size_t>(vb) < pass.velocities->size() &&
+            const bool db = vb >= 0 && vb < pass_motions(pass) &&
                             snr_at(pass, static_cast<std::size_t>(vb), x, y, sb);
             if (!(da && db && std::fabs(sa - sb) <= tol)) ++c.best_v_unexplained;
         }

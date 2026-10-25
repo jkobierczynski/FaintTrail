@@ -77,11 +77,9 @@ StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {
     using clk = std::chrono::steady_clock;
     const auto t_start = clk::now();
     const auto& frames = *pass.frames;
-    const auto& t = *pass.t_h;
-    const auto& grid = *pass.velocities;
     const int w = frames[0].width, h = frames[0].height;
     const int n = static_cast<int>(frames.size());
-    const int nv = static_cast<int>(grid.size());
+    const int nv = pass_motions(pass);
     const int min_count = pass.min_count;
     const int nt = thread_count(pass.threads);
     const CpuBlocking blk = choose_blocking(w, h, nv, nt, blocking_);
@@ -93,8 +91,7 @@ StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {
     for (int v = 0; v < nv; ++v)
         for (int i = 0; i < n; ++i) {
             Shift& s = sh[static_cast<std::size_t>(v) * n + i];
-            s.dx = static_cast<int>(std::lround(grid[static_cast<std::size_t>(v)].first * t[static_cast<std::size_t>(i)]));
-            s.dy = static_cast<int>(std::lround(grid[static_cast<std::size_t>(v)].second * t[static_cast<std::size_t>(i)]));
+            pass_shift(pass, v, i, s.dx, s.dy);
             s.x0 = std::max(0, -s.dx);
             s.x1 = std::min(w, w - s.dx);
             s.y0 = std::max(0, -s.dy);

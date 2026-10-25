@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.8.1, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
+> Status: **0.8.2, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -216,9 +216,9 @@ fainttrail regress tests/regression [--backend NAME] [--strict]
 
 [docs/KERNEL_FEATURES.md](docs/KERNEL_FEATURES.md) compares whole-pixel and sub-pixel
 shifts, measures what straight-line stacking loses on curved tracks, and tests
-per-frame weights, all at equal false-alarm rates. Whole-pixel shifts stay; the
-kernel will accept an optional shift table for curved tracks; weights stay out of
-the kernel.
+per-frame weights, all at equal false-alarm rates. Whole-pixel shifts stay; since
+0.8.2 the kernel accepts an optional shift table (curved, ephemeris-guided or
+parallax-corrected tracks); weights stay out of the kernel.
 
 ## Development
 

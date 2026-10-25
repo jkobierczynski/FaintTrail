@@ -224,8 +224,9 @@ int study_curvature() {
         std::printf("\n");
     }
     std::printf("\nS/N kept by straight-line stacking of a curved track (FWHM 2.4 px, 60 frames over 59 min)\n");
-    std::printf("%12s %12s %12s %12s\n", "departure", "departure", "S/N straight", "kept");
-    std::printf("%12s %12s %12s %12s\n", "(px)", "(FWHM)", "/ curved", "");
+    std::printf("%12s %12s %14s %8s %16s %8s\n", "departure", "departure", "S/N straight", "kept", "S/N shift table",
+                "kept");
+    std::printf("%12s %12s %14s %8s %16s %8s\n", "(px)", "(FWHM)", "/ ideal", "", "(curvature known)", "");
     SimParams s = base_sim(77, 256, 2.4);
     s.nmovers = 0;
     const SimResult base = simulate(s);
@@ -261,7 +262,21 @@ int study_curvature() {
             }
         }
         const double curved = sum / std::sqrt(static_cast<double>(cnt));
-        std::printf("%12.1f %12.2f %6.1f /%5.1f %11.0f%%\n", dev, dev / 2.4, lin, curved, 100.0 * lin / curved);
+        // the kernel with an explicit shift table: every trial motion gets the known curvature
+        ShiftTable table = linear_shift_table(prep.t_h, grid);
+        for (int j = 0; j < table.motions; ++j)
+            for (int i = 0; i < table.frames; ++i) {
+                const double ti = prep.t_h[static_cast<std::size_t>(i)];
+                table.y(j, i) = static_cast<int>(std::lround(grid[static_cast<std::size_t>(j)].second * ti +
+                                                             0.5 * a * (ti * ti - T * T / 12.0)));
+            }
+        StackPass sp;
+        sp.frames = &prep.filtered;
+        sp.shifts = &table;
+        sp.min_count = std::max(3, static_cast<int>(std::ceil(p.min_coverage * prep.nframes)));
+        const float tab = map_peak(be->run(sp).max_snr, x0, y0, 3);
+        std::printf("%12.1f %12.2f %6.1f /%5.1f %7.0f%% %16.1f %7.0f%%\n", dev, dev / 2.4, lin, curved,
+                    100.0 * lin / curved, tab, 100.0 * tab / curved);
         std::fflush(stdout);
     }
     return 0;

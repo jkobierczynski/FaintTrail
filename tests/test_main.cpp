@@ -454,6 +454,84 @@ static void test_backend_contract() {
     CHECK(threw);
 }
 
+// Explicit shift tables (D38): the straight-line table reproduces the default
+// exactly; arbitrary (curved, jumping, far out of the frame) tables give
+// bit-identical results in every implementation and block size.
+static void test_shift_tables() {
+    detail_rng_seed(777);
+    const int w = 41, h = 29, n = 9;
+    std::vector<Image> frames(static_cast<std::size_t>(n), Image(w, h));
+    std::vector<double> t(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        t[static_cast<std::size_t>(i)] = (i - 4) * 0.3;
+        for (auto& v : frames[static_cast<std::size_t>(i)].data) v = static_cast<float>(detail_rng_normal());
+    }
+    std::vector<std::pair<double, double>> vel;
+    for (int j = -5; j <= 5; ++j)
+        for (int k = -4; k <= 4; ++k) vel.emplace_back(j * 3.0, k * 2.5);
+    StackPass base;
+    base.frames = &frames;
+    base.t_h = &t;
+    base.velocities = &vel;
+    base.min_count = 6;
+    const StackResult ref = run_pass_naive(base);
+    // 1. the straight-line table is the default, bit for bit
+    const ShiftTable lin = linear_shift_table(t, vel);
+    StackPass tab = base;
+    tab.shifts = &lin;
+    for (const StackResult& r : {run_pass_naive(tab), run_pass_simple(tab), make_backend("cpu")->run(tab)}) {
+        CHECK(r.max_snr.data == ref.max_snr.data);
+        CHECK(r.best_v == ref.best_v);
+    }
+    // 2. an arbitrary table: curved tracks, random jumps, shifts far outside the frame
+    ShiftTable cur;
+    cur.resize(150, n);
+    for (int j = 0; j < cur.motions; ++j)
+        for (int i = 0; i < n; ++i) {
+            const double ti = t[static_cast<std::size_t>(i)];
+            const double ax = (j % 7) - 3.0, ay = (j % 5) - 2.0;
+            cur.x(j, i) = static_cast<int>(std::lround((j % 13 - 6) * ti + ax * ti * ti)) + (j == 77 ? 500 : 0);
+            cur.y(j, i) = static_cast<int>(std::lround((j % 11 - 5) * ti + ay * ti * ti)) + (j % 17 == 0 && i == 3 ? 4 : 0);
+        }
+    StackPass free = base;
+    free.velocities = nullptr;  // not needed with a table
+    free.t_h = nullptr;
+    free.shifts = &cur;
+    const StackResult naive = run_pass_naive(free);
+    const StackResult simple = run_pass_simple(free);
+    CHECK(simple.max_snr.data == naive.max_snr.data && simple.best_v == naive.best_v);
+    for (const auto& blk : {detail::CpuBlocking{1, 1}, detail::CpuBlocking{5, 7}, detail::CpuBlocking{64, 64}})
+        for (int threads : {1, 3}) {
+            free.threads = threads;
+            detail::CpuBackend be(blk);
+            const StackResult r = be.run(free);
+            CHECK(r.max_snr.data == naive.max_snr.data);
+            CHECK(r.best_v == naive.best_v);
+        }
+    CHECK(check_backend(free, naive, make_backend("cpu")->run(free)).ok);
+    // 3. malformed passes are refused
+    ShiftTable bad = cur;
+    bad.frames = n - 1;
+    StackPass wrong = free;
+    wrong.shifts = &bad;
+    bool threw = false;
+    try {
+        run_pass_naive(wrong);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+    StackPass mismatch = free;
+    mismatch.velocities = &vel;  // 99 velocities, 150 motions in the table
+    threw = false;
+    try {
+        make_backend("cpu")->run(mismatch);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
 // 16-bit fixture files and cropping: quantisation well below the noise, NaN kept,
 // WCS and registration offsets consistent after the crop.
 static void test_crop_and_int16() {
@@ -671,6 +749,7 @@ int main() {
         {"cancellation", test_cancellation},
         {"plate-solution transfer", test_wcs_transfer},
         {"backend contract", test_backend_contract},
+        {"shift tables", test_shift_tables},
         {"crop and 16-bit FITS", test_crop_and_int16},
         {"regression case files", test_regression_case},
         {"memory layout", test_memory_layout},

@@ -502,6 +502,19 @@ int cmd_check_backend(const Args& a) {
         if (round == 0) {
             auto [ref, tr] = timed([&] { return run_pass_naive(pass); });
             report("vs naive contract (72x52, 12 fr)", check_backend(pass, ref, got), tr, tc);
+            // the same frames with an explicit, curved shift table
+            ShiftTable curved = linear_shift_table(prep.t_h, grid);
+            for (int j = 0; j < curved.motions; ++j)
+                for (int i = 0; i < curved.frames; ++i) {
+                    const double ti = prep.t_h[static_cast<std::size_t>(i)];
+                    curved.x(j, i) += static_cast<int>(std::lround(((j % 9) - 4) * 2.0 * ti * ti));
+                    curved.y(j, i) += static_cast<int>(std::lround(((j % 7) - 3) * 2.0 * ti * ti));
+                }
+            StackPass cp = pass;
+            cp.shifts = &curved;
+            auto [got2, tc2] = timed([&] { return cand->run(cp); });
+            auto [ref2, tr2] = timed([&] { return run_pass_naive(cp); });
+            report("curved shift table vs naive", check_backend(cp, ref2, got2), tr2, tc2);
         } else {
             auto [ref, tr] = timed([&] { return run_pass_simple(pass); });
             report("vs simple reference (384x320, 40 fr)", check_backend(pass, ref, got), tr, tc);

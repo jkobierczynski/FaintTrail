@@ -63,14 +63,18 @@ How much S/N a straight-line search keeps, from tracks injected with a known
 curvature into a simulated sequence (FWHM 2.4 px, 60 frames over 59 min), compared
 with stacking along the true curved track:
 
-| departure from a straight line | S/N kept |
-|---:|---:|
-| 0.2 FWHM | 99 % |
-| 0.4 FWHM | 95 % |
-| 0.6 FWHM | 90 % |
-| 0.8 FWHM | 84 % |
-| 1.25 FWHM | 73 % |
-| 2.1 FWHM | 56 % |
+| departure from a straight line | S/N kept, straight lines | S/N kept, shift table with the curvature (0.8.2) |
+|---:|---:|---:|
+| 0.2 FWHM | 99 % | 100 % |
+| 0.4 FWHM | 95 % | 101 % |
+| 0.6 FWHM | 90 % | 101 % |
+| 0.8 FWHM | 84 % | 101 % |
+| 1.25 FWHM | 73 % | 101 % |
+| 2.1 FWHM | 56 % | 101 % |
+
+(Relative to stacking along the true track with interpolation; whole-pixel stacking
+on the best grid point comes out a percent higher because it picks the strongest of
+neighbouring trials.)
 
 With 1.5–2″/px and a FWHM of 2–3 px (4–5″), the loss stays below 5 % up to a
 departure of about 2″: everything in the main belt even over 6 hours, and near-Earth
@@ -82,8 +86,10 @@ kernel already works from a table of integer shifts per motion and frame; accept
 an explicit table in place of `round(v·t)` costs nothing per addition. With it, the
 same kernel can stack along curved tracks (a curvature search for near-Earth
 objects), along an ephemeris (known objects), or with parallax-corrected motions.
-The contract will take an optional shift table, with `round(v·t)` as the default
-generator. A curvature *search* (two more grid dimensions) is not planned now; it
+**Implemented in 0.8.2:** `StackPass::shifts` takes an optional `ShiftTable`;
+`linear_shift_table()` builds the default `round(v·t)` table. The last column above
+shows the kernel recovering the full S/N of curved tracks when it is given their
+curvature. A curvature *search* (two more grid dimensions) is not planned now; it
 belongs to a later near-Earth mode.
 
 ## 3. Per-frame weights
@@ -133,7 +139,7 @@ and validated like the calibration. It is recorded as an open item.
 |---|---|
 | shifts | whole pixel, unchanged |
 | motion grid | 0.5 px tolerance, unchanged |
-| track shape | optional explicit shift table per motion and frame (free in the kernel) |
+| track shape | optional explicit shift table per motion and frame (free in the kernel; in since 0.8.2) |
 | frame weights | none in the kernel; possible preprocessing option for poor nights |
 
 ## Reproducing

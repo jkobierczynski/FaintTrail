@@ -325,7 +325,7 @@ at about twice the kernel cost; a finer whole-pixel grid gained 1–2 % for 4× 
 motions; a coarser sub-pixel grid lost 2 %. Interpolation smooths signal and noise
 alike. The GPU kernel needs no texture interpolation. See KERNEL_FEATURES.md.
 
-### D38. An optional explicit shift table in the backend contract (decided 0.8.1, to implement)
+### D38. An optional explicit shift table in the backend contract (decided 0.8.1, implemented 0.8.2)
 **Why.** Straight-line stacking keeps 95 % of the S/N up to a departure of 0.4 FWHM
 (about 2″): all main-belt objects, and near-Earth objects beyond about 0.1 AU for
 1–2 h sequences. Closer objects or long sequences lose a quarter or more. The
@@ -333,6 +333,13 @@ cache-blocked kernel already stacks from a shift table per motion and frame, so
 accepting an explicit table costs nothing per addition and enables curved,
 ephemeris-guided and parallax-corrected stacks later. `round(v·t)` stays the default
 generator; a curvature search is not planned now.
+**Implementation.** `ShiftTable` (integer dx, dy per motion and frame) and
+`StackPass::shifts`; `linear_shift_table()` builds the default; backends read shifts
+through `pass_shift()`. The naive, simple and cache-blocked implementations agree
+bit for bit on arbitrary tables (curved, jumping, far outside the frame), the
+straight-line table reproduces the default exactly, and `check-backend` includes a
+curved table. Given the curvature, the kernel recovers the full S/N of curved
+tracks (KERNEL_FEATURES.md).
 
 ### D39. No per-frame weights in the kernel (0.8.1)
 **Why.** On the three real sequences frame efficiency varies by 8–12 %, worth 0.3–0.7 %
@@ -366,7 +373,6 @@ never selects a registered backend.
 * Slow movers in short sequences lose signal to the static sky.
 * The 1.25 astrometric factor needs independent confirmation.
 * Faster leave-out median (O(n log n)).
-* Implement the optional shift table (D38).
 * Conditional down-weighting or rejection of poor frames (D39), with its own validation.
 * Tiling in the GUI and the C API.
 * More real cases: fainter and faster objects, unbinned frames.
@@ -389,3 +395,4 @@ never selects a registered backend.
 | 0.7 | spatial tiling with exact equivalence |
 | 0.8 | threshold calibration: Gaussian-field tail, artefact screening; (4456) Mawson found |
 | 0.8.1 | kernel feature study (shifts, curved tracks, weights); backend registration |
+| 0.8.2 | explicit shift tables in the backend contract |

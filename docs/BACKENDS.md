@@ -21,7 +21,11 @@ The GUI has a *Backend* selector in the Detection group; the C API has
 The header defines the computation exactly; in short:
 
 * Shifts are integers, `round(v * t_i)` with halves rounded away from zero,
-  evaluated in double precision.
+  evaluated in double precision, or, since 0.8.2, taken from an explicit
+  `ShiftTable` (one integer shift per trial motion and frame) when the pass carries
+  one. Tables allow curved, ephemeris-guided or parallax-corrected tracks;
+  `linear_shift_table()` reproduces the straight-line rule exactly. A backend reads
+  every shift through `pass_shift()` and must support both forms.
 * A frame covers an output pixel when the shifted source pixel lies inside it.
   Pixels covered by fewer than `min_count` frames are undefined for that motion.
 * `S_v = sum(g_i) / sqrt(c)`, summed in single precision in ascending frame order.
@@ -45,7 +49,8 @@ motions' S/N values are within that same tolerance. `check_backend()` and the
    `src/backend_<name>.cpp`, compiled only when its toolkit is found by CMake.
 2. Register it in `backend_names()` / `make_backend()` in `src/backend.cpp`,
    before `"cpu"` so that `auto` prefers it, and only when a usable device is present.
-3. Run `fainttrail check-backend --backend <name>` and `ctest`; add the backend to
+3. Run `fainttrail check-backend --backend <name>` (it includes a curved shift
+   table) and `ctest`; add the backend to
    the conformance loop in `tests/test_main.cpp`.
 4. Run the real-data regression cases with the new backend:
    `fainttrail regress tests/regression --backend <name> --strict`. The candidates,
