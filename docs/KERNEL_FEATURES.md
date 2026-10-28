@@ -145,7 +145,7 @@ and validated like the calibration. It is recorded as an open item.
 ## Reproducing
 
 ```sh
-cmake -S . -B build -DFAINTTRAIL_BUILD_TOOLS=ON && cmake --build build -j
+cmake -S . -B build -DFAINTTRAIL_BUILD_TOOLS=ON && cmake --build build --config Release -j
 ./build/fainttrail_kernel_feature_study shifts
 ./build/fainttrail_kernel_feature_study curvature
 ./build/fainttrail_kernel_feature_study weights DIR...

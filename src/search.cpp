@@ -533,6 +533,7 @@ std::vector<Peak> select_peaks(const std::vector<Peak>& peaks, double threshold,
 // false-alarm rates, sky coordinates and ids. `meta` needs only the frame times,
 // FWHM and WCS; `contrib` holds each candidate's per-frame track values.
 void finish_candidates(const Prepared& meta, std::vector<RefinedCandidate> rc, SearchResult& res) {
+    res.has_sky = meta.wcs.valid;
     std::sort(rc.begin(), rc.end(), [](const RefinedCandidate& a, const RefinedCandidate& b) { return a.c.snr > b.c.snr; });
     const Prepared& p = meta;
     const double r_overlap = 1.5 * p.fwhm_px;

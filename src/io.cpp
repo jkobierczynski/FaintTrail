@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 Jurgen Kobierczynski
 #include "fainttrail/io.hpp"
+#include "fainttrail/solve.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -85,7 +86,7 @@ void write_candidates_csv(const std::string& path, const SearchResult& res) {
       << " threshold_snr=" << std::setprecision(3) << res.threshold_snr << " method=" << res.threshold_method
       << " velocities=" << res.n_velocities << " dv_pxh=" << res.dv_pxh << " fwhm_px=" << res.fwhm_px << "\n";
     f << "id,ok,flags,x,y,pos_err_px,vx_pxh,vy_pxh,vel_err_pxh,snr,snr_coarse,snr_half1,snr_half2,max_frame_fraction,"
-         "false_alarms_per_run,flux,mag_inst,ra_deg,dec_deg,rate_arcsec_min,pa_deg\n";
+         "false_alarms_per_run,flux,mag_inst,ra_deg,dec_deg,rate_arcsec_min,pa_deg,mag,mag_err,mag_band\n";
     for (const auto& c : res.candidates) {
         f << c.id << ',' << (c.ok ? 1 : 0) << ",\"" << c.flags << "\"," << std::setprecision(3) << c.x + 1.0 << ','
           << c.y + 1.0 << ',' << c.pos_err_px << ',' << c.vx_pxh << ',' << c.vy_pxh << ',' << c.vel_err_pxh << ','
@@ -94,7 +95,11 @@ void write_candidates_csv(const std::string& path, const SearchResult& res) {
           << c.max_frame_fraction << ',' << std::scientific << std::setprecision(2) << c.false_alarms_per_run
           << std::fixed << ',' << std::setprecision(2) << c.flux << ',' << std::setprecision(3) << c.mag_inst << ','
           << std::setprecision(7) << c.ra_deg << ',' << c.dec_deg << ',' << std::setprecision(4)
-          << c.rate_arcsec_min << ',' << std::setprecision(2) << c.pa_deg << '\n';
+          << c.rate_arcsec_min << ',' << std::setprecision(2) << c.pa_deg << ',';
+        if (res.mag_band && c.mag < 90.0)
+            f << std::setprecision(2) << c.mag << ',' << c.mag_err << ',' << res.mag_band << '\n';
+        else
+            f << ",,\n";
     }
 }
 
@@ -200,16 +205,36 @@ std::string summary_text(const SearchResult& res, bool ok_only) {
     s << "candidates          : " << nok << " passed, " << res.candidates.size() - nok << " flagged\n";
     if (!res.backend.empty()) s << "backend             : " << res.backend_description << "\n";
     s << "elapsed             : " << std::setprecision(1) << res.elapsed_s << " s\n";
-    char line[256];
-    std::snprintf(line, sizeof line, "\n %3s %2s %8s %8s %8s %8s %6s %6s %6s %5s %8s  %s\n", "id", "ok", "x", "y",
-                  "rate\"/m", "PA", "S/N", "half1", "half2", "frac", "FA/run", "flags");
+    if (res.has_sky) s << "positions at        : " << iso_from_mjd(res.t_ref_mjd, 1) << " UTC (RA/Dec J2000)\n";
+    if (res.mag_band)
+        s << "magnitudes          : " << res.mag_band << " from Gaia DR3, zero point " << std::setprecision(3) << res.mag_zero_point
+          << " +- " << res.mag_zp_error << " (" << res.mag_stars << " stars)\n";
+    char line[320];
+    std::snprintf(line, sizeof line, "\n %3s %2s %8s %8s %8s %8s %6s %6s %6s %5s %8s", "id", "ok", "x", "y", "rate\"/m", "PA",
+                  "S/N", "half1", "half2", "frac", "FA/run");
     s << line;
+    if (res.has_sky) {
+        std::snprintf(line, sizeof line, "  %-11s %-11s", "RA", "Dec");
+        s << line;
+    }
+    if (res.mag_band) {
+        std::snprintf(line, sizeof line, "  %5c", res.mag_band);
+        s << line;
+    }
+    s << "  flags\n";
     for (const auto& c : res.candidates) {
         if (ok_only && !c.ok) continue;
-        std::snprintf(line, sizeof line, " %3d %2s %8.2f %8.2f %8.3f %8.1f %6.2f %6.2f %6.2f %5.2f %8.1e  %s\n", c.id,
+        std::snprintf(line, sizeof line, " %3d %2s %8.2f %8.2f %8.3f %8.1f %6.2f %6.2f %6.2f %5.2f %8.1e", c.id,
                       c.ok ? "+" : "-", c.x + 1.0, c.y + 1.0, c.rate_arcsec_min, c.pa_deg, c.snr, c.snr_half1,
-                      c.snr_half2, c.max_frame_fraction, c.false_alarms_per_run, c.flags.c_str());
+                      c.snr_half2, c.max_frame_fraction, c.false_alarms_per_run);
         s << line;
+        if (res.has_sky) s << "  " << format_ra(c.ra_deg, 2) << ' ' << format_dec(c.dec_deg, 1);
+        if (res.mag_band) {
+            if (c.mag < 90.0) std::snprintf(line, sizeof line, "  %5.2f", c.mag);
+            else std::snprintf(line, sizeof line, "  %5s", "-");
+            s << line;
+        }
+        s << "  " << c.flags << '\n';
     }
     return s.str();
 }

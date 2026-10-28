@@ -27,6 +27,8 @@ struct SearchOutcome {
     std::shared_ptr<fainttrail::Prepared> prep;
     std::shared_ptr<fainttrail::SearchResult> result;
     QString error;
+    QString solve;       // plate solving result, if it ran
+    QString photometry;  // photometric calibration result, if it ran
     bool cancelled = false;
 };
 
@@ -57,6 +59,7 @@ private slots:
     void simulateDialog();
     void cancelSearch();
     void exportCandidates();
+    void exportMpc();
     void importPlateSolution();
     void exportTracklets();
     void searchFinished();
@@ -131,4 +134,6 @@ private:
     QAction* m_actExportCand = nullptr;
     QAction* m_actImportWcs = nullptr;
     QAction* m_actExportTrack = nullptr;
+    QAction* m_actExportMpc = nullptr;
+    QString m_obscode = "500";
 };

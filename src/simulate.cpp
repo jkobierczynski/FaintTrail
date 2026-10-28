@@ -53,6 +53,7 @@ SimResult simulate(const SimParams& p, const std::vector<SimMover>& movers_in) {
         const double m = draw_star_mag(rng, p.star_mag_bright, p.star_mag_faint);
         stars.push_back({rng.uniform(-5.0, w + 5.0), rng.uniform(-5.0, h + 5.0),
                          std::pow(10.0, -0.4 * (m - p.zero_point))});
+        out.stars.push_back({stars.back().x, stars.back().y, m});
     }
 
     // moving objects

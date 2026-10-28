@@ -117,8 +117,13 @@ public:
 };
 
 // Names of the backends compiled into this build, best first, followed by the
-// registered ones.
+// registered ones. "cuda" is listed (first) only when this build has CUDA support
+// and a device is usable.
 std::vector<std::string> backend_names();
+
+// Whether the CUDA backend can run here; if not, `why` receives the reason
+// (not compiled in, no driver, no device).
+bool cuda_backend_available(std::string* why = nullptr);
 
 // Register an additional backend under `name` (experimental kernels, studies,
 // out-of-tree GPU backends). "auto" never selects a registered backend. A
@@ -126,7 +131,10 @@ std::vector<std::string> backend_names();
 using BackendFactory = std::function<std::unique_ptr<SearchBackend>()>;
 void register_backend(const std::string& name, BackendFactory factory);
 
-// Create a backend by name; "auto" (or "") picks the best available one.
+// Create a backend by name; "auto" (or "") picks the best available one: "cuda"
+// when usable, else "cpu". The CUDA backend takes options after a colon, e.g.
+// "cuda:device=1" or "cuda:max_mb=256" (cap on device memory for frames; smaller
+// values force row bands, used by check-backend to test the banding).
 // Throws std::runtime_error for unknown or unavailable backends.
 std::unique_ptr<SearchBackend> make_backend(const std::string& name = "auto");
 

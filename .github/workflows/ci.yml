@@ -26,6 +26,28 @@ jobs:
           name: gui-screenshot
           path: screenshot.png
 
+  # Compile-only check of the CUDA backend (GitHub runners have no GPU: the
+  # tests run on the CPU and check_backend_cuda is skipped).
+  linux-cuda:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CUDA 12.8 (compiler and runtime only)
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ cuda-nvcc-12-8 cuda-cudart-dev-12-8
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFAINTTRAIL_BUILD_GUI=OFF
+          -DFAINTTRAIL_CUDA=ON -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc
+          -DCMAKE_CUDA_ARCHITECTURES="86;89;120"
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
   macos:
     runs-on: macos-14
     steps:

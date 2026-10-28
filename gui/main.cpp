@@ -10,14 +10,29 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QFileInfo>
+#include <QMessageBox>
 #include <QStyleFactory>
 #include <QTimer>
 
 #include "mainwindow.hpp"
 
+static int run(QApplication& app);
+
 int main(int argc, char** argv) {
     fainttrail::tune_allocator_for_images();
     QApplication app(argc, argv);
+    // a windowed program has no console: show fatal errors instead of vanishing
+    try {
+        return run(app);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(nullptr, "fainttrail-gui", QString("Fatal error: %1").arg(QString::fromLocal8Bit(e.what())));
+    } catch (...) {
+        QMessageBox::critical(nullptr, "fainttrail-gui", "Fatal error (unknown exception)");
+    }
+    return 1;
+}
+
+static int run(QApplication& app) {
     QApplication::setApplicationName("fainttrail-gui");
     QApplication::setApplicationVersion(fainttrail::version());
     QApplication::setStyle(QStyleFactory::create("Fusion"));

@@ -58,9 +58,16 @@ struct SimTruth {
     double expected_snr_stack = 0.0;  // S/N after stacking all frames on the true motion
 };
 
+// A field star of the simulation (for photometric calibration tests).
+struct SimStar {
+    double x = 0.0, y = 0.0;  // 0-based pixel
+    double mag = 0.0;         // on the simulation's magnitude scale (zero_point)
+};
+
 struct SimResult {
     std::vector<Frame> frames;
     std::vector<SimTruth> truth;
+    std::vector<SimStar> stars;
     double t_ref_mjd = 0.0;           // reference epoch for x_ref / y_ref
 };
 

@@ -13,7 +13,14 @@ the pipeline.
 
 ## 1. Preprocessing (`prepare`)
 
-Input: registered (aligned) frames with mid-exposure times.
+Input: frames with mid-exposure times.
+
+0. **Registration.** Stars are found in the first, middle and last frame and
+   matched; if the star field moves by more than 1.5 px, every frame is aligned
+   on the middle one (similarity transform fitted to matched stars, bicubic
+   resampling, pixels from outside the frame set to NaN). The offset back to the
+   detector is kept for the detector-fixed test (section 4). Already registered
+   frames are left untouched.
 
 1. **Background.** The median of each frame is subtracted, which absorbs changes
    in sky level and transparency.
@@ -153,4 +160,6 @@ automatically when the untiled search would need more than 60 % of the RAM.
 * Long sequences (many frames) spend much time in the leave-out median of the
   static sky, which costs O(n²) per pixel; in a tiled search it is computed about
   twice.
-* The frames must already be calibrated and registered. FaintTrail does not align.
+* The frames must already be calibrated (darks, flats). Registration is built in
+  (section 1) but models only shift, rotation and scale, not optical distortion,
+  and needs about six stars per frame; tiled searches cannot align.

@@ -4,6 +4,9 @@
 // CPU reference backend (OpenMP, cache-blocked, auto-vectorised row loops).
 #pragma once
 
+#include <string>
+#include <utility>
+
 #include "fainttrail/backend.hpp"
 
 namespace fainttrail::detail {
@@ -19,13 +22,14 @@ CpuBlocking choose_blocking(int w, int h, int nv, int nt, const CpuBlocking& req
 
 class CpuBackend final : public SearchBackend {
 public:
-    explicit CpuBackend(CpuBlocking blocking = {}) : blocking_(blocking) {}
+    explicit CpuBackend(CpuBlocking blocking = {}, std::string note = {}) : blocking_(blocking), note_(std::move(note)) {}
     std::string name() const override { return "cpu"; }
     std::string description() const override;
     StackResult run(const StackPass& pass, const ProgressFn& progress = {}) override;
 
 private:
     CpuBlocking blocking_;
+    std::string note_;  // appended to the description, e.g. why "auto" did not pick a GPU
 };
 
 }  // namespace fainttrail::detail

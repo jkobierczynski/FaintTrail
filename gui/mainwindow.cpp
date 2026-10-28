@@ -11,7 +11,10 @@
 #include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFile>
 #include <QFileInfo>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -101,8 +104,12 @@ void MainWindow::buildUi() {
     fileMenu->addSeparator();
     m_actExportCand = fileMenu->addAction(tr("Export &candidates (CSV)..."), this, &MainWindow::exportCandidates);
     m_actExportTrack = fileMenu->addAction(tr("Export &tracklets (CSV)..."), this, &MainWindow::exportTracklets);
+    m_actExportMpc = fileMenu->addAction(tr("Export &MPC observations..."), this, &MainWindow::exportMpc);
+    m_actExportMpc->setToolTip(tr("MPC 80-column lines (3 per passing candidate), for MPChecker or Find_Orb"));
     m_actExportCand->setEnabled(false);
     m_actExportTrack->setEnabled(false);
+    m_actExportMpc->setEnabled(false);
+    m_actExportMpc->setEnabled(false);
     fileMenu->addSeparator();
     fileMenu->addAction(tr("&Quit"), qApp, &QApplication::quit)->setShortcut(QKeySequence::Quit);
     menuBar()->addMenu(tr("&Help"))->addAction(tr("&About FaintTrail"), this, &MainWindow::about);
@@ -174,7 +181,13 @@ void MainWindow::buildUi() {
     for (const auto& n : backend_names()) {
         const QString q = QString::fromStdString(n);
         m_backend->addItem(q, q);
-        m_backend->setItemData(m_backend->count() - 1, QString::fromStdString(make_backend(n)->description()), Qt::ToolTipRole);
+        QString desc;
+        try {
+            desc = QString::fromStdString(make_backend(n)->description());
+        } catch (const std::exception& e) {  // e.g. a GPU that cannot be initialised
+            desc = tr("unavailable: %1").arg(QString::fromLocal8Bit(e.what()));
+        }
+        m_backend->setItemData(m_backend->count() - 1, desc, Qt::ToolTipRole);
     }
     m_backend->setToolTip(tr("Implementation of the stacking loop"));
     df->addRow(tr("Backend"), m_backend);
@@ -286,7 +299,7 @@ void MainWindow::buildUi() {
     });
     split->addWidget(m_view);
     m_table = new QTableWidget;
-    const QStringList headers = {tr("#"),  tr("pass"), tr("x"),      tr("y"),     tr("rate \"/min"), tr("PA °"),
+    const QStringList headers = {tr("#"),  tr("pass"), tr("x"),      tr("y"),     tr("RA"),  tr("Dec"), tr("rate \"/min"), tr("PA °"),
                                  tr("S/N"), tr("half 1"), tr("half 2"), tr("max frame"), tr("FA/search"), tr("mag"),
                                  tr("flags")};
     m_table->setColumnCount(headers.size());
@@ -345,9 +358,24 @@ bool MainWindow::loadFiles(const QStringList& files) {
     QApplication::setOverrideCursor(Qt::WaitCursor);
     try {
         auto frames = load_frames(paths);
+        // align raw frames right away, so that the viewer, the candidates and the
+        // exported positions all refer to the same (reference frame) pixel grid
+        QString aligned;
+        bool same = true;
+        for (const auto& f : frames)
+            same = same && f.image.width == frames[0].image.width && f.image.height == frames[0].image.height;
+        std::vector<const Image*> ims;
+        std::vector<double> t;
+        for (const auto& f : frames) {
+            ims.push_back(&f.image);
+            t.push_back((f.mjd_mid - frames[0].mjd_mid) * 24.0);
+        }
+        if (frames.size() >= 5 && (!same || !check_registration(ims, t).registered))
+            aligned = QString::fromStdString(register_frames(frames).summary());
         QApplication::restoreOverrideCursor();
         m_truth.clear();
         setFrames(std::move(frames), QFileInfo(files.front()).absolutePath());
+        if (!aligned.isEmpty()) m_status->setText(tr("Frames registered: %1").arg(aligned));
         return true;
     } catch (const std::exception& e) {
         QApplication::restoreOverrideCursor();
@@ -504,6 +532,7 @@ void MainWindow::clearResults() {
     m_details->setText(tr("Select a candidate to inspect its stacks."));
     m_actExportCand->setEnabled(false);
     m_actExportTrack->setEnabled(false);
+    m_actExportMpc->setEnabled(false);
 }
 
 // ------------------------------------------------------------------ search
@@ -550,10 +579,35 @@ void MainWindow::runSearch() {
             return !m_cancel.load();
         };
         try {
+            const std::string first = frames->empty() ? std::string() : frames->front().source;
             out.prep = std::make_shared<Prepared>(
                 prepare(std::move(*frames), params, [&](double f, const std::string& s) { return cb(0.1 * f, s); }));
+            // no plate solution: solve the stacked static sky with ASTAP, if it is installed
+            if (!out.prep->wcs.valid && !find_astap().empty()) {
+                cb(0.1, "plate solving (ASTAP)");
+                SolveHints hints;
+                try {
+                    hints = hints_from_header(fits_layout(first).header, out.prep->height);
+                } catch (const std::exception&) {
+                }
+                out.solve = QString::fromStdString(solve_prepared(*out.prep, hints).message);
+            }
             out.result = std::make_shared<SearchResult>(
                 search(*out.prep, params, [&](double f, const std::string& s) { return cb(0.1 + 0.9 * f, s); }));
+            // magnitudes calibrated against Gaia DR3 (downloaded once per field, then cached)
+            if (out.result->has_sky && !out.prep->static_sky.data.empty()) {
+                try {
+                    cb(1.0, "photometry (Gaia DR3)");
+                    double ra, dec, rad;
+                    field_circle(*out.prep, ra, dec, rad);
+                    const auto cat = fetch_gaia(ra, dec, rad, 19.0);
+                    const PhotometryResult pr = calibrate_photometry(*out.prep, cat, 'V');
+                    apply_photometry(*out.prep, pr, *out.result);
+                    out.photometry = QString::fromStdString(pr.message);
+                } catch (const std::exception& e) {
+                    out.photometry = QString::fromStdString(std::string("no photometric calibration: ") + e.what());
+                }
+            }
         } catch (const Cancelled&) {
             out.cancelled = true;
         } catch (const std::exception& e) {
@@ -591,7 +645,10 @@ void MainWindow::searchFinished() {
     const auto& r = *m_result;
     int ok = 0;
     for (const auto& c : r.candidates) ok += c.ok;
-    m_status->setText(tr("%1 candidates passed, %2 flagged, %3 s").arg(ok).arg(r.candidates.size() - ok).arg(r.elapsed_s, 0, 'f', 1));
+    m_status->setText(tr("%1 candidates passed, %2 flagged, %3 s").arg(ok).arg(r.candidates.size() - ok).arg(r.elapsed_s, 0, 'f', 1) +
+                      (out.solve.isEmpty() ? QString() : QString("; ") + out.solve));
+    if (!out.photometry.isEmpty()) m_status->setToolTip(out.photometry);
+    if (!out.photometry.isEmpty()) m_status->setText(m_status->text() + "; " + out.photometry.left(120));
 
     QString s = m_summary->text();
     const int cut = s.indexOf("<hr>");
@@ -620,6 +677,8 @@ void MainWindow::searchFinished() {
     m_summary->setText(s);
     m_actExportCand->setEnabled(true);
     m_actExportTrack->setEnabled(true);
+    m_actExportMpc->setEnabled(m_result->has_sky);
+    updateRateLabels();  // a plate solution may have arrived with the search
     refreshTable();
     refreshImage();
     refreshMarkers();
@@ -779,6 +838,9 @@ void MainWindow::refreshTable() {
         m_table->setItem(row, col++, okItem);
         m_table->setItem(row, col++, numItem(c.x + 1.0, 2));
         m_table->setItem(row, col++, numItem(c.y + 1.0, 2));
+        const bool sky = m_result->has_sky;
+        m_table->setItem(row, col++, new QTableWidgetItem(sky ? QString::fromStdString(format_ra(c.ra_deg, 2, ':')) : QString::fromUtf8("\u2013")));
+        m_table->setItem(row, col++, new QTableWidgetItem(sky ? QString::fromStdString(format_dec(c.dec_deg, 1, ':')) : QString::fromUtf8("\u2013")));
         m_table->setItem(row, col++, numItem(rates ? c.rate_arcsec_min : std::hypot(c.vx_pxh, c.vy_pxh), 3));
         if (rates) m_table->setItem(row, col++, numItem(c.pa_deg, 1));
         else m_table->setItem(row, col++, new QTableWidgetItem(QString::fromUtf8("\u2013")));
@@ -787,10 +849,12 @@ void MainWindow::refreshTable() {
         m_table->setItem(row, col++, numItem(c.snr_half2, 2));
         m_table->setItem(row, col++, numItem(c.max_frame_fraction, 3));
         m_table->setItem(row, col++, new QTableWidgetItem(QString::number(c.false_alarms_per_run, 'g', 2)));
-        m_table->setItem(row, col++, numItem(c.mag_inst, 2));
+        m_table->setItem(row, col++, numItem(m_result->mag_band && c.mag < 90.0 ? c.mag : c.mag_inst, 2));
         m_table->setItem(row, col++, new QTableWidgetItem(QString::fromStdString(c.flags)));
     }
-    if (!rates) m_table->horizontalHeaderItem(4)->setText(tr("v px/h"));
+    m_table->horizontalHeaderItem(6)->setText(rates ? tr("rate \"/min") : tr("v px/h"));
+    m_table->horizontalHeaderItem(m_table->columnCount() - 2)
+        ->setText(m_result->mag_band ? tr("%1 mag").arg(QChar(m_result->mag_band)) : tr("mag (inst.)"));
     m_table->resizeColumnsToContents();
 }
 
@@ -839,6 +903,12 @@ void MainWindow::refreshDetails() {
     html += tr("halves %1 / %2 (expected ≈ %3 each)<br>").arg(c.snr_half1, 0, 'f', 2).arg(c.snr_half2, 0, 'f', 2).arg(c.snr_coarse / std::sqrt(2.0), 0, 'f', 2);
     html += tr("largest single-frame share %1<br>").arg(c.max_frame_fraction, 0, 'f', 3);
     html += tr("expected noise peaks this strong: %1 per search<br>").arg(c.false_alarms_per_run, 0, 'g', 2);
+    if (m_result && m_result->mag_band && c.mag < 90.0)
+        html += tr("<b>%1 = %2 ± %3</b> (Gaia DR3 calibration, %4 stars)<br>")
+                    .arg(QChar(m_result->mag_band))
+                    .arg(c.mag, 0, 'f', 2)
+                    .arg(c.mag_err, 0, 'f', 2)
+                    .arg(m_result->mag_stars);
     html += tr("instrumental mag %1 (flux %2)").arg(c.mag_inst, 0, 'f', 2).arg(c.flux, 0, 'f', 1);
     if (!c.flags.empty()) {
         html += tr("<br><br><small>half: one half of the sequence lacks the signal · single: one frame dominates · "
@@ -894,6 +964,25 @@ void MainWindow::exportCandidates() {
     } catch (const std::exception& e) {
         QMessageBox::warning(this, tr("Export failed"), QString::fromStdString(e.what()));
     }
+}
+
+void MainWindow::exportMpc() {
+    if (!m_result || !m_prep || !m_result->has_sky) return;
+    bool ok = false;
+    const QString code = QInputDialog::getText(this, tr("MPC observations"), tr("Observatory code (500 = geocentric):"),
+                                               QLineEdit::Normal, m_obscode, &ok).trimmed().toUpper();
+    if (!ok || code.isEmpty()) return;
+    m_obscode = code;
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export MPC observations"), "observations.txt", tr("Text (*.txt)"));
+    if (path.isEmpty()) return;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, tr("Export failed"), tr("Cannot write %1").arg(path));
+        return;
+    }
+    const auto lines = mpc_observations(*m_prep, *m_result, code.toStdString());
+    for (const auto& l : lines) f.write((l + "\n").c_str());
+    m_status->setText(tr("Wrote %1 MPC lines to %2").arg(lines.size()).arg(path));
 }
 
 void MainWindow::exportTracklets() {

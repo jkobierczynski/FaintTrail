@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- FaintTrail icon: a dark sky, a faint dotted trail and the stacked detection -->
+  <rect width="256" height="256" rx="40" fill="#0d1526"/>
+  <g fill="#c9d6ee">
+    <circle cx="44" cy="58" r="3"/><circle cx="200" cy="40" r="2.5"/><circle cx="214" cy="190" r="3"/>
+    <circle cx="66" cy="206" r="2"/><circle cx="150" cy="96" r="2"/><circle cx="34" cy="140" r="2"/>
+  </g>
+  <g fill="#7fa8e8" opacity="0.55">
+    <circle cx="52" cy="188" r="5"/><circle cx="76" cy="170" r="5"/><circle cx="100" cy="152" r="5"/>
+    <circle cx="124" cy="134" r="5"/><circle cx="148" cy="116" r="5"/>
+  </g>
+  <circle cx="180" cy="92" r="14" fill="#ffd56a"/>
+  <circle cx="180" cy="92" r="27" fill="none" stroke="#5fd08a" stroke-width="6"/>
+</svg>

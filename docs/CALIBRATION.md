@@ -162,7 +162,7 @@ about 7.4.
 ## Reproducing
 
 ```sh
-cmake -S . -B build -DFAINTTRAIL_BUILD_TOOLS=ON && cmake --build build -j
+cmake -S . -B build -DFAINTTRAIL_BUILD_TOOLS=ON && cmake --build build --config Release -j
 ./build/fainttrail_calibration_study --sim --perms 96 --name sim512 --dump sim512.csv
 python3 tools/calibration_analysis.py sim512.csv
 ./build/fainttrail_null_flags_study --data DIR [--wcs-from F] --top 3000

@@ -13,6 +13,7 @@
 
 #include "backend_cpu.hpp"
 #include "common.hpp"
+#include "cuda_plan.hpp"
 
 namespace fainttrail {
 
@@ -24,7 +25,7 @@ std::vector<std::pair<std::string, BackendFactory>>& registry() {
 }  // namespace
 
 void register_backend(const std::string& name, BackendFactory factory) {
-    if (name.empty() || name == "auto" || name == "cpu") throw std::runtime_error("reserved backend name '" + name + "'");
+    if (name.empty() || name == "auto" || name == "cpu" || name == "cuda" || name.rfind("cuda:", 0) == 0) throw std::runtime_error("reserved backend name '" + name + "'");
     for (auto& e : registry())
         if (e.first == name) {
             e.second = std::move(factory);
@@ -33,16 +34,51 @@ void register_backend(const std::string& name, BackendFactory factory) {
     registry().emplace_back(name, std::move(factory));
 }
 
+bool cuda_backend_available(std::string* why) {
+#ifdef FAINTTRAIL_HAVE_CUDA
+    return detail::cuda_device_count(why) > 0;
+#else
+    if (why) *why = "this build has no CUDA support (configure with -DFAINTTRAIL_CUDA=ON)";
+    return false;
+#endif
+}
+
 std::vector<std::string> backend_names() {
     std::vector<std::string> names;
-    // GPU backends will be listed here first, when compiled in and a device is present.
+    if (cuda_backend_available(nullptr)) names.push_back("cuda");  // GPU first: "auto" picks the first
     names.push_back("cpu");
     for (const auto& e : registry()) names.push_back(e.first);
     return names;
 }
 
 std::unique_ptr<SearchBackend> make_backend(const std::string& name) {
-    if (name.empty() || name == "auto" || name == "cpu") return std::make_unique<detail::CpuBackend>();
+    if (name == "cuda" || name.rfind("cuda:", 0) == 0) {
+        const detail::CudaOptions opt = detail::parse_cuda_options(name.size() > 5 ? name.substr(5) : std::string());
+        std::string why;
+        if (!cuda_backend_available(&why)) throw std::runtime_error("CUDA backend unavailable: " + why);
+#ifdef FAINTTRAIL_HAVE_CUDA
+        return detail::make_cuda_backend(opt);
+#else
+        (void)opt;
+#endif
+    }
+    if (name.empty() || name == "auto") {
+#ifdef FAINTTRAIL_HAVE_CUDA
+        // CUDA compiled in: use it, or say on the CPU backend why not
+        std::string why;
+        if (cuda_backend_available(&why)) {
+            try {
+                return detail::make_cuda_backend({});
+            } catch (const std::exception& e) {
+                why = e.what();
+            }
+        }
+        return std::make_unique<detail::CpuBackend>(detail::CpuBlocking{}, "CUDA not used: " + why);
+#else
+        return std::make_unique<detail::CpuBackend>();
+#endif
+    }
+    if (name == "cpu") return std::make_unique<detail::CpuBackend>();
     for (const auto& e : registry())
         if (e.first == name) return e.second();
     std::string known;

@@ -3,17 +3,20 @@
 //
 // Unit and end-to-end tests. Plain C++, no framework needed: each test is a
 // function; a failed CHECK prints the location and marks the test as failed.
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <string>
 #include <vector>
 
 #include "fainttrail/fainttrail.hpp"
 #include "backend_cpu.hpp"
+#include "cuda_plan.hpp"
 
 extern "C" int run_c_api_test(void);
 
@@ -448,7 +451,7 @@ static void test_backend_contract() {
             if (v >= 0) { v = (v + 1) % static_cast<int>(vel.size()); break; }
         CHECK(!check_backend(pass, ref, bad2).ok);
     }
-    CHECK(!backend_names().empty() && backend_names().front() == "cpu");
+    CHECK(!backend_names().empty() && backend_names().front() == (cuda_backend_available() ? "cuda" : "cpu"));
     bool threw = false;
     try { make_backend("no-such-backend"); } catch (const std::runtime_error&) { threw = true; }
     CHECK(threw);
@@ -530,6 +533,401 @@ static void test_shift_tables() {
         threw = true;
     }
     CHECK(threw);
+}
+
+// The CUDA algorithm (row bands, motion chunks, per-pixel kernel code) run on
+// the host: bit-identical to the naive contract for every band and chunk size.
+// When a CUDA device is usable, the real backend is checked the same way.
+static void test_cuda_algorithm() {
+    detail_rng_seed(99);
+    const int w = 37, h = 23, n = 7;
+    std::vector<Image> frames(static_cast<std::size_t>(n), Image(w, h));
+    std::vector<double> t(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        t[static_cast<std::size_t>(i)] = (i - 3) * 0.25;
+        for (auto& v : frames[static_cast<std::size_t>(i)].data) v = static_cast<float>(detail_rng_normal());
+    }
+    frames[2].data[100] = std::nanf("");  // NaN propagates identically
+    std::vector<std::pair<double, double>> vel;
+    for (int j = -6; j <= 6; ++j)
+        for (int k = -6; k <= 6; ++k) vel.emplace_back(j * 2.0, k * 2.0);
+    vel.emplace_back(400.0, 0.0);
+    vel.emplace_back(0.0, -400.0);  // 171 motions: not a multiple of the motion block
+    ShiftTable cur;
+    cur.resize(150, n);
+    for (int j = 0; j < cur.motions; ++j)
+        for (int i = 0; i < n; ++i) {
+            const double ti = t[static_cast<std::size_t>(i)];
+            cur.x(j, i) = static_cast<int>(std::lround((j % 13 - 6) * ti + ((j % 7) - 3.0) * ti * ti)) + (j == 77 ? 500 : 0);
+            cur.y(j, i) = static_cast<int>(std::lround((j % 11 - 5) * ti + ((j % 5) - 2.0) * ti * ti)) - (j == 91 ? 900 : 0);
+        }
+    const double row = 4.0 * w * n;  // device bytes per frame row
+    for (const bool table : {false, true}) {
+        StackPass pass;
+        pass.frames = &frames;
+        pass.t_h = &t;
+        pass.velocities = table ? nullptr : &vel;
+        pass.shifts = table ? &cur : nullptr;
+        pass.min_count = 5;
+        const StackResult ref = run_pass_naive(pass);
+        for (const double budget : {1.0, 20 * row, 30 * row, 1e9})       // 1-row bands ... one band
+            for (const double adds : {1.0, 3.0 * w * h * n, 1e12}) {      // 8 motions per launch ... all
+                const detail::CudaPlan plan = detail::make_cuda_plan(pass, budget, adds);
+                CHECK(plan.chunk % detail::cuda_core::kMotionBlock == 0);
+                for (const auto& b : plan.bands) CHECK(b.r0 >= 0 && b.r1 <= h && b.r1 > b.r0 && b.y1 > b.y0);
+                const StackResult got = detail::emulate_cuda_pass(pass, budget, adds);
+                CHECK(got.max_snr.data.size() == ref.max_snr.data.size());
+                bool same = got.best_v == ref.best_v;
+                for (std::size_t k = 0; same && k < ref.max_snr.data.size(); ++k) {
+                    const float a = got.max_snr.data[k], b = ref.max_snr.data[k];
+                    same = (a == b) || (std::isnan(a) && std::isnan(b));
+                }
+                if (!same) std::printf("    emulation differs: table=%d budget=%g adds=%g\n", table, budget, adds);
+                CHECK(same);
+            }
+        CHECK(detail::make_cuda_plan(pass, 1.0, 1.0).bands.size() == static_cast<std::size_t>(h));
+        CHECK(detail::make_cuda_plan(pass, 1e9, 1e12).bands.size() == 1);
+        if (cuda_backend_available()) {
+            for (const char* name : {"cuda", "cuda:max_mb=0.01,launch_adds=1"}) {
+                const StackResult got = make_backend(name)->run(pass);
+                if (!check_backend(pass, ref, got).ok) std::printf("    %s: %s\n", name, check_backend(pass, ref, got).message.c_str());
+                CHECK(got.best_v == ref.best_v);
+                CHECK(check_backend(pass, ref, got).ok);
+            }
+        }
+    }
+    // options
+    const detail::CudaOptions o = detail::parse_cuda_options("device=1,max_mb=64");
+    CHECK(o.device == 1 && o.max_mb == 64);
+    bool threw = false;
+    try { detail::parse_cuda_options("speed=11"); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+    if (!cuda_backend_available()) {
+        threw = false;
+        try { make_backend("cuda"); } catch (const std::runtime_error&) { threw = true; }
+        CHECK(threw);
+    }
+}
+
+// Unregistered input (a drifting mount) is recognised and refused; registered
+// frames pass and keep working.
+static void test_registration_check() {
+    SimParams sp = small_sim(31);
+    sp.width = 256;
+    sp.height = 192;
+    sp.nframes = 20;
+    sp.nstars = 150;
+    const SimResult sim = simulate(sp);
+    std::vector<const Image*> ims;
+    std::vector<double> t;
+    for (const auto& f : sim.frames) {
+        ims.push_back(&f.image);
+        t.push_back((f.mjd_mid - sim.frames[0].mjd_mid) * 24.0);
+    }
+    const DriftCheck ok = check_registration(ims, t);
+    CHECK(ok.measured);
+    CHECK(ok.registered);
+    // shift frame i by round(0.9 i) px in x and round(0.3 i) in y, as a drifting mount would
+    std::vector<Frame> drift = sim.frames;
+    for (std::size_t i = 0; i < drift.size(); ++i) {
+        const int dx = static_cast<int>(std::lround(0.9 * i)), dy = static_cast<int>(std::lround(0.3 * i));
+        Image out(sp.width, sp.height, 0.0f);
+        for (int y = 0; y < sp.height; ++y)
+            for (int x = 0; x < sp.width; ++x) {
+                const int sx = x - dx, sy = y - dy;
+                out.at(x, y) = (sx >= 0 && sy >= 0 && sx < sp.width && sy < sp.height) ? sim.frames[i].image.at(sx, sy) : 300.0f;
+            }
+        drift[i].image = std::move(out);
+    }
+    ims.clear();
+    for (const auto& f : drift) ims.push_back(&f.image);
+    const DriftCheck bad = check_registration(ims, t);
+    CHECK(bad.measured && !bad.registered);
+    CHECK_NEAR(bad.dx, std::lround(0.9 * 19), 0.6);
+    CHECK_NEAR(bad.dy, std::lround(0.3 * 19), 0.6);
+    CHECK(!bad.message.empty());
+    SearchParams p = quick_search();
+    p.align = "check";
+    bool threw = false;
+    try { prepare(drift, p); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+    p.align = "off";
+    {
+        const Prepared q = prepare(drift, p);
+        CHECK(!q.alignment.applied);
+    }
+    // aligned: back on the middle frame's grid, with the offsets to the detector recorded
+    std::vector<Frame> al = drift;
+    const AlignmentReport rep = register_frames(al);
+    CHECK(rep.applied && rep.dropped == 0 && al.size() == drift.size());
+    const std::size_t ref = static_cast<std::size_t>(rep.reference);
+    CHECK(ref == drift.size() / 2);
+    for (std::size_t i = 0; i < al.size(); ++i) {
+        const double ex = std::lround(0.9 * i) - std::lround(0.9 * ref), ey = std::lround(0.3 * i) - std::lround(0.3 * ref);
+        CHECK_NEAR(rep.frames[i].dx, ex, 0.2);  // frame i is displaced by (ex, ey) from the reference
+        CHECK_NEAR(rep.frames[i].dy, ey, 0.2);
+        CHECK(rep.frames[i].rms_px < 0.3);
+        CHECK(al[i].has_reg_offset);
+        CHECK_NEAR(al[i].reg_dx, ex, 0.2);  // detector = registered + offset
+    }
+    ims.clear();
+    for (const auto& f : al) ims.push_back(&f.image);
+    CHECK(check_registration(ims, t).registered);
+    // pixel values: an aligned frame is its simulated original, displaced like the reference
+    {
+        const std::size_t i = 3;
+        const int rx = static_cast<int>(std::lround(0.9 * ref)), ry = static_cast<int>(std::lround(0.3 * ref));
+        double maxdiff = 0, peak = 0;
+        for (int y = 30; y < sp.height - 30; ++y)
+            for (int x = 30; x < sp.width - 30; ++x) {
+                const float v = al[i].image.at(x, y), o = sim.frames[i].image.at(x - rx, y - ry);
+                if (!std::isfinite(v)) continue;
+                maxdiff = std::max(maxdiff, std::fabs(static_cast<double>(v) - o));
+                peak = std::max(peak, static_cast<double>(o));
+            }
+        CHECK(maxdiff < 0.1 * peak);  // a few hundredths of a pixel of fit error on the brightest star
+    }
+    // "auto" aligns inside prepare() and the search then works on aligned data
+    p.align = "auto";
+    const Prepared q = prepare(drift, p);
+    CHECK(q.alignment.applied);
+    CHECK(q.reg_dx.size() == drift.size());
+}
+
+// End to end: a drifting sequence, aligned automatically, finds the same mover
+// with nearly the same S/N as the registered original.
+static void test_aligned_search() {
+    SimParams sp = small_sim(57);
+    sp.width = 320;
+    sp.height = 256;
+    sp.nstars = 600;
+    SimMover m;
+    m.id = "M";
+    m.x_ref = 150;
+    m.y_ref = 120;
+    m.vx_pxh = 18;
+    m.vy_pxh = 7;
+    m.mag = 19.6;
+    const SimResult sim = simulate(sp, {m});
+    SearchParams p = quick_search();
+    p.align = "off";
+    const SearchResult r0 = search(prepare(sim.frames, p), p);
+    std::vector<Frame> drift = sim.frames;
+    const std::size_t n = drift.size();
+    auto shift_of = [](std::size_t i, int& dx, int& dy) {
+        dx = static_cast<int>(std::lround(0.9 * i));
+        dy = static_cast<int>(std::lround(-0.35 * i));
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+        int dx, dy;
+        shift_of(i, dx, dy);
+        Image out(sp.width, sp.height, 0.0f);
+        for (int y = 0; y < sp.height; ++y)
+            for (int x = 0; x < sp.width; ++x) {
+                const int sx = std::clamp(x - dx, 0, sp.width - 1), sy = std::clamp(y - dy, 0, sp.height - 1);
+                out.at(x, y) = sim.frames[i].image.at(sx, sy);
+            }
+        drift[i].image = std::move(out);
+    }
+    p.align = "auto";
+    const Prepared q = prepare(drift, p);
+    CHECK(q.alignment.applied);
+    const SearchResult r1 = search(q, p);
+    int rx, ry;
+    shift_of(n / 2, rx, ry);  // the reference (middle) frame's displacement
+    auto find = [](const SearchResult& r, double x, double y) -> const Candidate* {
+        for (const auto& c : r.candidates)
+            if (c.ok && std::hypot(c.x - x, c.y - y) < 1.5) return &c;
+        return nullptr;
+    };
+    const Candidate* c0 = find(r0, m.x_ref, m.y_ref);
+    const Candidate* c1 = find(r1, m.x_ref + rx, m.y_ref + ry);
+    CHECK(c0 != nullptr);
+    CHECK(c1 != nullptr);
+    if (c0 && c1) {
+        CHECK(c1->snr > 0.85 * c0->snr);
+        CHECK_NEAR(c1->vx_pxh, m.vx_pxh, 2.0);
+        CHECK_NEAR(c1->vy_pxh, m.vy_pxh, 2.0);
+    }
+    int ok0 = 0, ok1 = 0;
+    for (const auto& c : r0.candidates) ok0 += c.ok;
+    for (const auto& c : r1.candidates) ok1 += c.ok;
+    CHECK(ok1 <= ok0 + 1);  // no stars or hot pixels turned into movers
+    CHECK(r1.threshold_snr < r0.threshold_snr + 1.0);
+}
+
+// Sky positions: sexagesimal formatting and parsing, pointing hints from FITS
+// headers, MPC 80-column lines, and the ASTAP hand-over (with a stand-in solver
+// on POSIX systems).
+static void test_sky_positions() {
+    CHECK(format_ra(169.610833) == "11 18 26.60");
+    CHECK(format_dec(13.750278) == "+13 45 01.0");
+    CHECK(format_dec(-0.5, 0, ':') == "-00:30:00");
+    CHECK(format_ra(359.99999999) == "00 00 00.00");
+    double v = 0;
+    CHECK(parse_ra("11:18:26.6", v) && std::fabs(v - 169.610833) < 1e-4);
+    CHECK(parse_ra("169.5", v) && std::fabs(v - 169.5) < 1e-12);
+    CHECK(parse_dec("-05 07 30", v) && std::fabs(v + 5.125) < 1e-12);
+    CHECK(parse_dec("-00 30 00", v) && std::fabs(v + 0.5) < 1e-12);
+    CHECK(!parse_dec("95", v));
+
+    FitsHeader h;
+    h.set("OBJCTRA", std::string("11 18 30"));
+    h.set("OBJCTDEC", std::string("+13 40 00"));
+    h.set("FOCALLEN", 530.0);
+    h.set("XPIXSZ", 7.6);
+    const SolveHints hi = hints_from_header(h, 1760);
+    CHECK(hi.has_center);
+    CHECK_NEAR(hi.ra_deg, 169.625, 1e-9);
+    CHECK_NEAR(hi.dec_deg, 13.666667, 1e-6);
+    CHECK_NEAR(hi.fov_deg, 206.265 * 7.6 / 530.0 * 1760 / 3600.0, 1e-9);
+
+    // a sequence with a known plate solution and one mover
+    SimParams sp = small_sim(5);
+    SimMover m;
+    m.id = "A";
+    m.x_ref = 80;
+    m.y_ref = 100;
+    m.vx_pxh = 15;
+    m.vy_pxh = -10;
+    m.mag = 18.8;
+    const SimResult sim = simulate(sp, {m});
+    SearchParams p = quick_search();
+    Prepared prep = prepare(sim.frames, p);
+    CHECK(prep.wcs.valid);
+    const SearchResult res = search(prep, p);
+    CHECK(res.has_sky);
+    const auto lines = mpc_observations(prep, res, "C95");
+    int ok = 0;
+    for (const auto& c : res.candidates) ok += c.ok;
+    CHECK(ok >= 1);
+    CHECK(static_cast<int>(lines.size()) == 3 * ok);
+    if (!lines.empty()) {
+        const std::string& l = lines[1];
+        CHECK(l.size() == 80);
+        CHECK(l.substr(5, 7) == "FT00001");
+        CHECK(l[14] == 'C');
+        CHECK(l.substr(77, 3) == "C95");
+        // the middle line is at the middle frame: RA/Dec of the track there
+        const Candidate& c = res.candidates[0];
+        std::vector<double> t = prep.t_h;
+        std::sort(t.begin(), t.end());
+        double ra, dec;
+        prep.wcs.pix2sky(c.x + c.vx_pxh * t[t.size() / 2], c.y + c.vy_pxh * t[t.size() / 2], ra, dec);
+        CHECK(l.substr(32, 11) == format_ra(ra, 2));
+        CHECK(l.substr(44, 11) == format_dec(dec, 1));
+    }
+
+    // without a solution, positions stay in pixels; update_sky_coordinates adds them
+    Prepared bare = prep;
+    bare.wcs = Wcs{};
+    SearchResult r2 = search(bare, p);
+    CHECK(!r2.has_sky);
+    CHECK(mpc_observations(bare, r2).empty());
+    bare.wcs = prep.wcs;
+    update_sky_coordinates(bare, r2);
+    CHECK(r2.has_sky);
+    if (!r2.candidates.empty() && !res.candidates.empty()) {
+        CHECK_NEAR(r2.candidates[0].ra_deg, res.candidates[0].ra_deg, 1e-9);
+        CHECK_NEAR(r2.candidates[0].rate_arcsec_min, res.candidates[0].rate_arcsec_min, 1e-9);
+    }
+
+    SolveOptions none;
+    none.astap = (temp_dir() / "no-such-astap").string();
+    CHECK(!solve_with_astap(prep.static_sky, {}, none).ok);
+#ifndef _WIN32
+    // stand-in for ASTAP: answers with the simulation's own solution as a .ini file
+    const Wcs& w = prep.wcs;
+    const fs::path fake = temp_dir() / "fake_astap.sh";
+    {
+        std::ofstream f(fake);
+        f << "#!/bin/sh\n"
+          << "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then base=$2; fi; shift; done\n"
+          << "printf 'PLTSOLVD=T\\nCRVAL1=%s\\nCRVAL2=%s\\nCRPIX1=%s\\nCRPIX2=%s\\nCD1_1=%s\\nCD1_2=%s\\nCD2_1=%s\\nCD2_2=%s\\n' "
+          << std::setprecision(17) << w.crval1 << ' ' << w.crval2 << ' ' << w.crpix1 << ' ' << w.crpix2 << ' ' << w.cd11
+          << ' ' << w.cd12 << ' ' << w.cd21 << ' ' << w.cd22 << " > \"$base.ini\"\n";
+    }
+    fs::permissions(fake, fs::perms::owner_all);
+    SolveOptions o;
+    o.astap = fake.string();
+    Prepared q = prep;
+    q.wcs = Wcs{};
+    const SolveResult sr = solve_prepared(q, hi, o);
+    if (!sr.ok) std::printf("    %s\n", sr.message.c_str());
+    CHECK(sr.ok && q.wcs.valid);
+    CHECK_NEAR(q.wcs.crval1, w.crval1, 1e-9);
+    CHECK_NEAR(sr.scale_arcsec, w.pixel_scale_arcsec(), 1e-6);
+#endif
+}
+
+// Photometric calibration: field stars of a simulation as the "catalogue", movers
+// of known magnitude (one fast enough to trail noticeably) come out right.
+static void test_photometry() {
+    // band conversions (Gaia EDR3 relations): a solar-coloured star
+    CatalogStar sun;
+    sun.g = 15.0;
+    sun.bp_rp = 0.82;
+    sun.has_colour = true;
+    CHECK_NEAR(catalog_mag(sun, 'G'), 15.0, 1e-12);
+    CHECK_NEAR(catalog_mag(sun, 'V'), 15.0 + 0.1525, 0.002);
+    CHECK(catalog_mag(sun, 'R') < 15.0);
+    CatalogStar nocol = sun;
+    nocol.has_colour = false;
+    CHECK(std::isnan(catalog_mag(nocol, 'V')));
+    CHECK_NEAR(trail_flux_factor(0.0, 3.0), 1.0, 1e-12);
+    CHECK(trail_flux_factor(3.0, 3.0) < 0.95 && trail_flux_factor(3.0, 3.0) > 0.85);
+
+    SimParams sp = small_sim(77);
+    sp.width = 320;
+    sp.height = 256;
+    sp.nstars = 900;
+    sp.exptime_s = 180;
+    sp.cadence_s = 190;
+    sp.nframes = 30;
+    std::vector<SimMover> mv(2);
+    mv[0] = {"slow", 90, 80, 16, 9, 18.6};
+    mv[1] = {"fast", 220, 170, -38, 14, 18.9};  // trails over 2 px in 180 s
+    const SimResult sim = simulate(sp, mv);
+    SearchParams p = quick_search();
+    p.vmax_pxh = 45;
+    const Prepared prep = prepare(sim.frames, p);
+    SearchResult res = search(prep, p);
+    // the simulation's stars as a Gaia-like catalogue (G = simulation magnitude)
+    std::vector<CatalogStar> cat;
+    for (const auto& st : sim.stars) {
+        CatalogStar c;
+        prep.wcs.pix2sky(st.x, st.y, c.ra_deg, c.dec_deg);
+        c.g = st.mag;
+        c.bp_rp = 0.8;
+        c.has_colour = true;
+        cat.push_back(c);
+    }
+    const PhotometryResult cal = calibrate_photometry(prep, cat, 'G');
+    if (!cal.ok) std::printf("    %s\n", cal.message.c_str());
+    CHECK(cal.ok);
+    CHECK(cal.stars >= 20);
+    CHECK(cal.rms < 0.08);
+    // the true zero point of a frame: mag = zero_point - 2.5 log10(flux_e / exptime) with gain 1
+    CHECK_NEAR(cal.zero_point, sp.zero_point + 2.5 * std::log10(sp.exptime_s), 0.06);
+    apply_photometry(prep, cal, res);
+    CHECK(res.mag_band == 'G');
+    for (const auto& m : mv) {
+        const Candidate* hit = nullptr;
+        for (const auto& c : res.candidates)
+            if (c.ok && std::hypot(c.x - m.x_ref, c.y - m.y_ref) < 1.5) hit = &c;
+        CHECK(hit != nullptr);
+        if (hit) {
+            CHECK_NEAR(hit->mag, m.mag, std::max(0.12, 3.0 * hit->mag_err));
+            CHECK(hit->mag_err > 0.0 && hit->mag_err < 0.2);
+        }
+    }
+    // MPC lines carry the magnitude and band in columns 66-71
+    const auto lines = mpc_observations(prep, res, "C95");
+    CHECK(!lines.empty());
+    if (!lines.empty()) {
+        CHECK(lines[0][70] == 'G');
+        CHECK(std::isdigit(static_cast<unsigned char>(lines[0][66])));
+    }
 }
 
 // 16-bit fixture files and cropping: quantisation well below the noise, NaN kept,
@@ -750,6 +1148,11 @@ int main() {
         {"plate-solution transfer", test_wcs_transfer},
         {"backend contract", test_backend_contract},
         {"shift tables", test_shift_tables},
+        {"CUDA algorithm (emulated)", test_cuda_algorithm},
+        {"registration check", test_registration_check},
+        {"aligned search of a drifting sequence", test_aligned_search},
+        {"sky positions and plate solving", test_sky_positions},
+        {"photometric calibration", test_photometry},
         {"crop and 16-bit FITS", test_crop_and_int16},
         {"regression case files", test_regression_case},
         {"memory layout", test_memory_layout},

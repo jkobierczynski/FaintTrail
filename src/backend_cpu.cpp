@@ -66,10 +66,12 @@ CpuBlocking choose_blocking(int w, int h, int nv, int nt, const CpuBlocking& req
 
 std::string CpuBackend::description() const {
 #ifdef FAINTTRAIL_HAVE_OPENMP
-    return "CPU reference, cache-blocked, OpenMP, " + std::to_string(thread_count(0)) + " threads";
+    std::string d = "CPU reference, cache-blocked, OpenMP, " + std::to_string(thread_count(0)) + " threads";
 #else
-    return "CPU reference, cache-blocked, single thread (built without OpenMP)";
+    std::string d = "CPU reference, cache-blocked, single thread (built without OpenMP)";
 #endif
+    if (!note_.empty()) d += " (" + note_ + ")";
+    return d;
 }
 
 StackResult CpuBackend::run(const StackPass& pass, const ProgressFn& progress) {

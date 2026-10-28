@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.8.2, CPU reference backend behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
+> Status: **0.9.0, CPU reference backend and a CUDA backend (bit-identical by design, not yet run on a GPU) behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.
@@ -35,22 +35,33 @@ than left to the observer:
   real or simulated, and reports the recovered fraction against S/N.
 * **Uncertainties.** Positions and motions come with 1-σ errors.
 
+## Download
+
+Binaries for Windows (CLI and GUI, with the CUDA backend), Linux (AppImage GUI and
+command-line tool) and macOS (Apple silicon) are attached to each
+[release](../../releases). See
+[BUILDING.md](BUILDING.md#releases) for what each file contains.
+
 ## Building
 
-Requirements: CMake ≥ 3.20 and a C++17 compiler. Optional: OpenMP (multithreading),
-Qt 6 Widgets + Concurrent (GUI). There are no other dependencies; FITS I/O is built in.
+See [BUILDING.md](BUILDING.md) for Windows (Visual Studio 2022, CUDA, Qt), Linux
+and macOS, the build options, and the optional run-time helpers (ASTAP for plate
+solving, curl for the Gaia photometry). In short, on Linux:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake --build build --config Release -j
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-Options: `-DFAINTTRAIL_BUILD_GUI=OFF`, `-DFAINTTRAIL_BUILD_CLI=OFF`,
-`-DFAINTTRAIL_BUILD_TESTS=OFF`, `-DFAINTTRAIL_BUILD_TOOLS=ON` (validation benchmark),
-`-DFAINTTRAIL_NATIVE=ON` (`-march=native`).
+and on Windows with the GPU backend and the GUI:
 
-On Debian/Ubuntu the GUI needs `qt6-base-dev`.
+```bat
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T cuda=12.8 -DFAINTTRAIL_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120 -DCMAKE_PREFIX_PATH=C:\Qt\6.11.2\msvc2022_64
+cmake --build build --config Release -j
+cmake --build build --config Release --target deploy_gui
+ctest --test-dir build -C Release --output-on-failure
+```
 
 ## Quick start
 
@@ -79,12 +90,24 @@ On Debian/Ubuntu the GUI needs `qt6-base-dev`.
 
 ## Input
 
-* **Calibrated, registered frames** on a common pixel grid (one FITS image each).
-  FaintTrail does not align frames; use your stacking or astrometry software for
-  that.
+* **Calibrated frames**, one FITS image each, registered or not. Since 0.9
+  FaintTrail checks whether the stars stay on the same pixels; if they move (a
+  drifting mount, raw frames), it aligns the frames on the middle one: stars are
+  matched, a shift, rotation and scale (meridian flips included) is fitted per
+  frame, and the frame is resampled. The offset back to the detector is kept, so
+  hot pixels and other detector defects are still recognised. `--align` chooses:
+  `auto` (default), `always`, `check` (refuse unregistered frames) or `off`.
+  `fainttrail register FRAMES -o DIR` aligns and writes the frames without
+  searching. Registration needs at least about 6 stars per frame; frames without
+  enough stars (clouds) are dropped and reported.
 * **Time** from `MJD-MID`, `MJD-OBS`, `DATE-OBS` (+`EXPTIME`) or `JD`.
-* **Plate solution**, either in the frames or borrowed with `--wcs-from FILE` (GUI:
-  *File › Import plate solution*). FILE can be any plate-solved image of the same
+* **Plate solution**, from one of three sources: in the frames; solved by
+  [ASTAP](https://www.hnsky.org/astap.htm) when it is installed (since 0.9:
+  FaintTrail stacks the aligned frames and lets ASTAP solve the stack, using the
+  pointing (`RA`/`DEC` or `OBJCTRA`/`OBJCTDEC`) and field size (`FOCALLEN`,
+  `XPIXSZ`) in the FITS header as hints; `--solve auto|always|off`, `--astap`,
+  `--ra`/`--dec`/`--fov`; the GUI solves automatically); or borrowed with
+  `--wcs-from FILE` (GUI: *File › Import plate solution*). FILE can be any plate-solved image of the same
   field, such as an ASTAP-solved stack: stars are matched, so different binning,
   cropping, 90° rotations and mirroring are handled. SIP/PV distortion terms are
   not used yet.
@@ -118,6 +141,20 @@ epoch (middle of the sequence, written in the header line):
 | `false_alarms_per_run` | expected number of noise peaks this strong per search |
 | `flux`, `mag_inst` | PSF flux per frame (data units), instrumental magnitude |
 | `ra_deg`, `dec_deg`, `rate_arcsec_min`, `pa_deg` | with a WCS |
+
+With a plate solution the terminal table shows RA and Dec (J2000) of every
+candidate at the reference epoch, and `--mpc FILE --obscode CODE` (GUI: *File ›
+Export MPC observations*) writes MPC 80-column observation lines, three per
+passing candidate (first, middle and last frame), with temporary designations
+`FT00001`... Paste them into MPChecker or Find_Orb to identify the objects.
+Magnitudes are calibrated against Gaia DR3 (since 0.9): FaintTrail downloads the
+Gaia stars of the field from VizieR with `curl` (cached per field), measures them
+on the stacked sky with the same PSF photometry as the candidates, and fits the
+zero point on stars of solar colour. `--band V` (default), `R` or `G`; V and R
+come from Gaia G and BP−RP. Fast movers are corrected for trailing. Offline, give
+a saved extract with `--catalog FILE`; `--photometry off` skips it. The MPC lines
+then carry magnitude and band. Check every object before submitting anything to
+the Minor Planet Center.
 
 `tracklets.csv` — predicted position of each passing candidate in every frame
 (time, pixel, RA/Dec). This is what a host application turns into ADES records
@@ -165,9 +202,12 @@ calibration, refinement and the consistency tests.
 ## Backends
 
 The stacking loop runs behind an interchangeable backend interface with an exact,
-testable contract; the cache-blocked CPU (OpenMP) backend is the reference. See
-[docs/BACKENDS.md](docs/BACKENDS.md) for the contract and how to add, for example,
-a CUDA backend.
+testable contract; the cache-blocked CPU (OpenMP) backend is the reference. Since
+0.9 there is a CUDA backend (`-DFAINTTRAIL_CUDA=ON`), used automatically when a GPU
+is present and designed to give bit-identical results. It has been compiled and its
+algorithm tested on the CPU, but not yet run on a GPU: check it with
+`fainttrail check-backend --backend cuda` and `ctest`. See
+[docs/BACKENDS.md](docs/BACKENDS.md).
 
 ## Profiling
 
@@ -208,7 +248,7 @@ fainttrail regress tests/regression [--backend NAME] [--strict]
 
 ## Roadmap
 
-* CUDA backend behind the same search interface, with the CPU path as reference
+* CUDA backend: verify and tune on the RTX 5080; then decide on GPU preprocessing
 * curved motion for fast near-Earth objects
 * more real-data cases (fainter and faster objects), then integration with AstroFind and Siril
 

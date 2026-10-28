@@ -4,8 +4,8 @@ Almost all of FaintTrail's search time is spent in one operation: stacking the
 matched-filtered frames along every trial motion and keeping, per pixel, the best
 S/N and the motion that produced it. That operation sits behind a small interface,
 `fainttrail::SearchBackend` in [`include/fainttrail/backend.hpp`](../include/fainttrail/backend.hpp),
-so that faster implementations (CUDA, Vulkan compute, ...) can be added without
-touching the rest of the pipeline.
+so that faster implementations can be added without touching the rest of the
+pipeline. Since 0.9 there are two: `cpu` (the reference) and `cuda`.
 
 ```
 fainttrail backends                       # list backends in this build
@@ -42,6 +42,94 @@ Other backends may sum in a different order: their S/N must agree within
 1e-4 · max(1, |S/N|), and the chosen motion may differ only where the two
 motions' S/N values are within that same tolerance. `check_backend()` and the
 `check-backend` command test exactly these rules.
+
+## The CUDA backend (0.9)
+
+### Building
+
+Needs the CUDA Toolkit; for an RTX 50xx card (Blackwell, compute capability 12.0)
+version 12.8 or newer. The backend is off by default, so builds without CUDA are
+unchanged. Full instructions, including the Visual Studio 2022 requirement on
+Windows, are in [BUILDING.md](../BUILDING.md).
+
+Linux:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFAINTTRAIL_CUDA=ON
+cmake --build build -j
+./build/fainttrail backends                       # "cuda" should be listed first
+./build/fainttrail check-backend --backend cuda   # must say: bit-identical in 4 of 4 checks
+ctest --test-dir build --output-on-failure        # regression cases run on the GPU ("auto")
+```
+
+Windows (Visual Studio 2022 build tools, CUDA 12.8 with its Visual Studio
+integration):
+
+```bat
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T cuda=12.8 -DFAINTTRAIL_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=120
+cmake --build build --config Release -j
+build\Release\fainttrail.exe check-backend --backend cuda
+ctest --test-dir build -C Release --output-on-failure
+```
+
+Without `CMAKE_CUDA_ARCHITECTURES` the code is compiled for the GPU in the build
+machine (`native`, CMake ≥ 3.24). For a binary that runs on other cards, list them,
+e.g. `-DCMAKE_CUDA_ARCHITECTURES="86;89;120"`. The CUDA runtime is linked
+statically; only the NVIDIA driver is needed at run time. A binary built with CUDA
+runs on machines without a GPU or driver: `auto` then falls back to the CPU and
+`fainttrail backends` says why. Verified on an RTX 5080 (Windows 11, CUDA 12.8,
+MSVC 14.44).
+
+### Choosing and options
+
+`auto` (the default everywhere) picks `cuda` when a device can be used, else `cpu`.
+`--backend cpu` forces the CPU. Options follow a colon:
+
+| name | meaning |
+|---|---|
+| `cuda:device=1` | use device 1 (default: `FAINTTRAIL_CUDA_DEVICE` or 0) |
+| `cuda:max_mb=256` | cap on device memory for frames; smaller values force more row bands |
+| `cuda:launch_adds=1e9` | additions per kernel launch (granularity of progress and cancel) |
+
+### How it works
+
+* **One thread per output pixel**, blocks of 32 × 8 threads, so a warp reads 32
+  consecutive pixels of a frame row: coalesced loads, and the shifts are the same
+  for the whole warp (broadcast from cache).
+* Each thread walks the trial motions in ascending order, 8 at a time with the 8
+  sums and coverage counts in registers, and for each group of 8 visits the frames
+  in ascending order. Every sum is therefore formed in exactly the order the
+  contract prescribes, and the result is **bit-identical to the CPU backend**, not
+  just within tolerance. (Compiled with `--fmad=false`; the kernel has no
+  multiply-add, the flag protects against future edits.)
+* Coverage is decided per frame inside the kernel (is the shifted pixel inside the
+  frame?), so no coverage map is needed; S/N = sum × 1/√c from a table computed on
+  the host in double precision, as on the CPU.
+* **Row bands.** The frames are uploaded only for the rows a band of output rows
+  can reach (band ± the extreme vertical shifts). Normally the whole sequence fits
+  in one band (the binned Leo Triplet sequence uses under 1 GB of the 16 GB of an
+  RTX 5080); larger ones are processed band by band within 80 % of free device
+  memory.
+* **Launches** cover a chunk of motions (about 4·10⁹ additions each, a few
+  milliseconds); every thread keeps its running maximum in device memory between
+  launches. Progress and cancellation are checked between launches.
+* Timings reported to `--profile`: upload, kernel, download, setup.
+
+The per-pixel code (`src/cuda_stack_core.hpp`) is shared with a host emulation
+(`emulate_cuda_pass` in `src/cuda_plan.cpp`) that executes the complete GPU
+algorithm, bands and launches included, on the CPU. The unit tests run it on every
+machine against the naive contract with 1-row bands, single-group launches, NaN
+input and shift tables far outside the frame, so the band and launch logic is
+tested even where no GPU is present. On a machine with a GPU the same test also
+runs the real backend.
+
+### Not done yet
+
+The kernel is a straightforward first version: shifts are read from global memory
+(cached), frames are uploaded for each pass (each null run has its own frames
+anyway), and nothing has been tuned on real hardware. Measurements on the RTX 5080
+come first; the candidates for tuning are shifts in shared memory, more motions
+per thread, and keeping frames on the device between the passes of one search.
 
 ## Adding a backend
 

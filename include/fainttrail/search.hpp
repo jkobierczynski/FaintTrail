@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "fainttrail/registration.hpp"
 #include "fainttrail/types.hpp"
 
 namespace fainttrail {
@@ -72,6 +73,12 @@ struct SearchParams {
     // preparation. Needed only for residual displays, stack_full() and
     // stack_cutout(snr = false); costs one more copy of the frames in memory.
     bool keep_residuals = false;
+    // Registration of the input frames (registration.hpp):
+    //   "auto"   check; align the frames when the stars move (> 1.5 px) or the sizes differ
+    //   "always" align the frames on their middle frame
+    //   "check"  check; refuse unregistered frames
+    //   "off"    trust the frames as they are
+    std::string align = "auto";
     std::uint64_t seed = 12345;
 };
 
@@ -105,6 +112,8 @@ struct Prepared {
     const std::vector<Image>* shared_sub = nullptr;  // null runs: the real data's `sub` (not owned)
     std::vector<int> time_rank;         // rank of each frame in time (for recomputing residuals)
     int static_exclude = 0;             // frames left out on each side by the leave-out median
+    DriftCheck registration;            // registration check of the input frames
+    AlignmentReport alignment;          // what register_frames() did, if it ran
 };
 
 struct Candidate {
@@ -121,6 +130,7 @@ struct Candidate {
     double flux = 0.0;                  // PSF flux in data units per frame
     double mag_inst = 0.0;              // -2.5 log10(flux) + 25
     double ra_deg = 0.0, dec_deg = 0.0; // at t_ref, if a WCS is present
+    double mag = 99.0, mag_err = 0.0;   // calibrated magnitude in SearchResult::mag_band (photometry.hpp)
     double rate_arcsec_min = 0.0;
     double pa_deg = 0.0;                // position angle of motion, east of north
     bool ok = false;                    // passed every test
@@ -149,6 +159,10 @@ struct SearchResult {
     double dv_pxh = 0.0;
     double fwhm_px = 0.0;
     double t_ref_mjd = 0.0;
+    bool has_sky = false;               // candidates carry RA/Dec (a plate solution was available)
+    char mag_band = 0;                  // 'V', 'R' or 'G' once calibrated (photometry.hpp), else 0
+    double mag_zero_point = 0.0, mag_zp_error = 0.0;
+    int mag_stars = 0;
     // Motions slower than this move less than two PSF widths during the
     // sequence and are partly absorbed by the static-sky model.
     double slowest_reliable_pxh = 0.0;

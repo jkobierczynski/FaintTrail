@@ -183,7 +183,7 @@ which the baselines report (and fail in strict mode).
 ## Reproducing
 
 ```sh
-cmake -S . -B build -DFAINTTRAIL_BUILD_TOOLS=ON && cmake --build build -j
+cmake -S . -B build -DFAINTTRAIL_BUILD_TOOLS=ON && cmake --build build --config Release -j
 ./build/fainttrail_benchmark bench          # about 15 minutes on 2 cores
 python3 tools/plot_benchmark.py bench docs/validation.png
 ```

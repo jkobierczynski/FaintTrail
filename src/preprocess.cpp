@@ -4,6 +4,7 @@
 // Preprocessing: from registered frames to unit-variance, matched-filtered
 // difference images in which only things that change or move remain.
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cmath>
 #include <numeric>
@@ -13,6 +14,7 @@
 #include "common.hpp"
 #include "internal.hpp"
 #include "psf.hpp"
+#include "fainttrail/registration.hpp"
 #include "fainttrail/search.hpp"
 
 namespace fainttrail {
@@ -497,8 +499,8 @@ Prepared with_times(const Prepared& base, const std::vector<double>& t_h, const 
 namespace {
 
 // steal = true: the frames' pixel buffers are moved into the prepared data.
-Prepared prepare_frames(std::vector<Frame>& frames, bool steal, const SearchParams& params,
-                        const ProgressFn& progress) {
+Prepared prepare_core(std::vector<Frame>& frames, bool steal, const SearchParams& params,
+                      const ProgressFn& progress) {
     const int n = static_cast<int>(frames.size());
     if (n < 5) throw std::runtime_error("synthetic tracking needs at least 5 frames");
     const int w = frames[0].image.width, h = frames[0].image.height;
@@ -553,6 +555,60 @@ Prepared prepare_frames(std::vector<Frame>& frames, bool steal, const SearchPara
     sw.lap("background + borders");
     detail::build_stage(p.sub, p, params, progress, true);
     if (progress && !progress(1.0, "prepared")) throw Cancelled();
+    return p;
+}
+
+// Registration check and, when needed, alignment (SearchParams::align), then the
+// preprocessing proper.
+Prepared prepare_frames(std::vector<Frame>& frames, bool steal, const SearchParams& params,
+                        const ProgressFn& progress) {
+    const std::string& mode = params.align;
+    if (mode != "auto" && mode != "always" && mode != "check" && mode != "off")
+        throw std::runtime_error("align must be auto, always, check or off (not '" + mode + "')");
+    if (frames.size() < 5) throw std::runtime_error("synthetic tracking needs at least 5 frames");
+    using clk = std::chrono::steady_clock;
+    DriftCheck chk;
+    AlignmentReport rep;
+    std::vector<StageTime> times;
+    std::vector<Frame> local;
+    std::vector<Frame>* src = &frames;
+    bool st = steal;
+    bool same = true;
+    for (const auto& f : frames)
+        same = same && f.image.width == frames[0].image.width && f.image.height == frames[0].image.height;
+    if (mode != "off") {
+        const auto t0 = clk::now();
+        if (same) {
+            std::vector<const Image*> ims;
+            std::vector<double> t;
+            for (const auto& f : frames) {
+                ims.push_back(&f.image);
+                t.push_back((f.mjd_mid - frames[0].mjd_mid) * 24.0);
+            }
+            chk = check_registration(ims, t);
+        }
+        times.push_back({"registration check", std::chrono::duration<double>(clk::now() - t0).count()});
+        const bool problem = !same || !chk.registered;
+        if (mode == "check" && problem)
+            throw std::runtime_error(same ? chk.message : "the frames differ in size: they are not registered on a common grid");
+        if (mode == "always" || (mode == "auto" && problem)) {
+            if (progress && !progress(0.0, "registering frames")) throw Cancelled();
+            const auto t1 = clk::now();
+            if (!steal) {  // the caller's frames stay untouched
+                local = frames;
+                src = &local;
+                st = true;
+            }
+            rep = register_frames(*src, params.threads);
+            times.push_back({"register frames", std::chrono::duration<double>(clk::now() - t1).count()});
+        }
+    } else if (!same) {
+        throw std::runtime_error("all frames must have the same size (are they registered?)");
+    }
+    Prepared p = prepare_core(*src, st, params, progress);
+    p.registration = chk;
+    p.alignment = std::move(rep);
+    p.timings.insert(p.timings.begin(), times.begin(), times.end());
     return p;
 }
 

@@ -1,0 +1,180 @@
+# Release binaries. Pushing a tag vX.Y.Z (equal to the VERSION in CMakeLists.txt)
+# builds the command-line tool and the GUI for Windows, Linux and macOS, runs the
+# tests, and publishes a GitHub release with:
+#   fainttrail-X.Y.Z-windows-x64.zip       CLI + GUI, CUDA backend, Qt and runtimes
+#   fainttrail-X.Y.Z-linux-x86_64.tar.gz   CLI, CUDA backend
+#   FaintTrail-X.Y.Z-x86_64.AppImage       GUI, CUDA backend, Qt inside
+#   fainttrail-X.Y.Z-macos-arm64.zip       FaintTrail.app + CLI (CPU backend)
+# "Run workflow" on the Actions page builds the same packages as artifacts
+# without publishing a release.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  QT_VERSION: '6.8.3'
+  CUDA_ARCHS: '75-real;86-real;89-real;120'   # RTX 20xx/GTX 16xx ... RTX 50xx (+ PTX for newer)
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Check the tag against CMakeLists.txt
+        run: echo "version=$(bash packaging/check-version.sh '${{ github.ref_name }}' | tail -1)" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CUDA 12.8 (compiler, runtime, Visual Studio integration)
+        shell: pwsh
+        run: |
+          $url = 'https://developer.download.nvidia.com/compute/cuda/12.8.1/network_installers/cuda_12.8.1_windows_network.exe'
+          Invoke-WebRequest $url -OutFile cuda.exe
+          Start-Process -FilePath .\cuda.exe -ArgumentList '-s nvcc_12.8 cudart_12.8 visual_studio_integration_12.8' -Wait -NoNewWindow
+          $cuda = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8'
+          if (-not (Test-Path "$cuda\bin\nvcc.exe")) { throw 'CUDA installation failed' }
+          # make sure the MSBuild integration is in the VS 2022 of the runner
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Copy-Item "$cuda\extras\visual_studio_integration\MSBuildExtensions\*" "$vs\MSBuild\Microsoft\VC\v170\BuildCustomizations" -Force
+          "CUDA_PATH=$cuda" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "$cuda\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T cuda=12.8
+          -DFAINTTRAIL_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCHS }}"
+          "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+      - name: Build
+        run: cmake --build build --config Release -j
+      - name: Test (CPU; the CUDA check is skipped without a GPU)
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Copy the Qt and Visual C++ runtime
+        run: cmake --build build --config Release --target deploy_gui
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          build\Release\fainttrail.exe version
+          build\Release\fainttrail.exe backends
+      - name: Package
+        shell: pwsh
+        run: packaging\package-windows.ps1 -Version ${{ needs.version.outputs.version }} -BuildDir build -OutDir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  linux:
+    needs: version
+    runs-on: ubuntu-22.04   # glibc 2.35: the binaries also run on newer distributions
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools and CUDA 12.8
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-shape0 file
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cuda-nvcc-12-8 cuda-cudart-dev-12-8
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          cache: true
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DFAINTTRAIL_CUDA=ON -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc
+          "-DCMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCHS }}"
+          "-DCMAKE_PREFIX_PATH=$QT_ROOT_DIR"
+      - name: Build
+        run: cmake --build build -j
+      - name: Test (CPU; the CUDA check is skipped without a GPU)
+        run: ctest --test-dir build --output-on-failure
+      - name: Package (tar.gz and AppImage)
+        run: QMAKE="$QT_ROOT_DIR/bin/qmake" bash packaging/package-linux.sh ${{ needs.version.outputs.version }} build dist
+      - name: Smoke test the AppImage
+        run: |
+          APPIMAGE_EXTRACT_AND_RUN=1 QT_QPA_PLATFORM=offscreen \
+            dist/FaintTrail-*-x86_64.AppImage --demo --screenshot screenshot-linux.png
+          test -s screenshot-linux.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  macos:
+    needs: version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt and OpenMP
+        run: brew install qt libomp
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix libomp)"
+          -DOpenMP_ROOT="$(brew --prefix libomp)"
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+      - name: Package
+        run: bash packaging/package-macos.sh ${{ needs.version.outputs.version }} build dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, windows, linux, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: FaintTrail ${{ needs.version.outputs.version }}
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## Downloads
+
+            | file | contents |
+            |---|---|
+            | `fainttrail-${{ needs.version.outputs.version }}-windows-x64.zip` | Windows 10/11 x64: `fainttrail-gui.exe` and `fainttrail.exe`, CUDA backend (NVIDIA driver 570 or newer), Qt and runtimes included; unpack the whole folder |
+            | `FaintTrail-${{ needs.version.outputs.version }}-x86_64.AppImage` | Linux x86_64 GUI (glibc 2.35+): `chmod +x` and run; CUDA backend included |
+            | `fainttrail-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz` | Linux x86_64 command-line tool, CUDA backend included |
+            | `fainttrail-${{ needs.version.outputs.version }}-macos-arm64.zip` | macOS on Apple silicon: `FaintTrail.app` and the command-line tool (not notarised: see README-BINARY.txt) |
+            | `SHA256SUMS.txt` | checksums |
+
+            The GPU backend is used automatically when an NVIDIA GPU and driver are present, otherwise the CPU.
+            Optional at run time: [ASTAP](https://www.hnsky.org/astap.htm) for plate solving; curl (built into Windows 10/11) for the Gaia photometry.
+            FaintTrail has not been checked end to end against confirmed MPC submissions: verify every object before reporting it.

@@ -62,6 +62,32 @@ about 15 % on the memory-bound kernel (PROFILING.md).
 GitHub Actions builds and runs the unit tests and the real-data fixtures on all
 three platforms; the GUI is smoke-tested offscreen on Linux.
 
+### D7a. Windows builds with the Visual Studio 2022 toolset (0.9)
+**Decision.** Windows builds use the Visual Studio 2022 generator (MSVC v143), also
+when Visual Studio 2026 is installed; CUDA via `-T cuda=<version>`, the CUDA
+architecture given explicitly, Qt's MSVC 2022 kit, the Qt runtime copied by the
+`deploy_gui` target, and the CUDA runtime linked statically. BUILDING.md has the
+steps and the errors met on the way.
+**Why.** CUDA 12.8 accepts host compilers only up to VS 2022 and installs its
+MSBuild integration only into the Visual Studio versions it knows; the first
+build on the author's PC (VS 2026) failed on both. Found and fixed while bringing
+up the CUDA backend: an import-library name clash (LNK1149), the static/DLL C
+runtime mismatch (LNK4098), `/O2` breaking Debug builds (D8016), MSVC's
+`INFINITY` in device code, and a GUI without its Qt DLLs.
+
+### D7b. Tagged releases with binaries from CI (0.9)
+**Decision.** A tag `vX.Y.Z` (checked against the CMake version) triggers
+`.github/workflows/release.yml`: Windows x64 (VS 2022, CUDA 12.8, Qt 6.8 MSVC,
+`windeployqt` with the compiler runtime, OpenMP DLL), Linux x86_64 on Ubuntu 22.04
+(CUDA 12.8; CLI as tar.gz, GUI as AppImage via linuxdeploy), macOS arm64 (Homebrew
+Qt and libomp, `macdeployqt`, ad-hoc signed, not notarised). Every job runs the
+tests before packaging; the release carries SHA-256 checksums. CUDA code for
+compute capability 7.5–12.0 plus PTX. The packaging lives in `packaging/` scripts
+so it can be run and debugged locally.
+**Status.** The Linux packaging was run locally (AppImage started and searched the
+demo sequence offscreen); the Windows and macOS jobs run for the first time on
+GitHub.
+
 ### D8. No external astronomy libraries in the core (0.1)
 FITS reading and writing, TAN WCS, time conversion and star matching are
 implemented in the library. Python (numpy, scipy, astropy) is used only by tools
@@ -76,7 +102,51 @@ outside the library (registration, catalogue plate solving, analysis scripts).
 `MJD-MID`, `MJD-OBS`, `DATE-OBS` (+`EXPTIME`) or `JD`.
 **Why.** Stacking software already does this well; duplicating it adds risk.
 `tools/register_sequence.py` exists only to prepare test data reproducibly.
-**Status.** In force.
+**Status.** Superseded in 0.9: the input is checked (D42) and aligned when needed (D43).
+
+### D42. Refuse unregistered input (0.9)
+**Decision.** `prepare()` finds stars in the first, middle and last frame (by time;
+extended local maxima, so hot pixels and cosmic rays do not count), matches them by
+voting on the offsets between star pairs, and stops with an explanation when the
+star field moves by more than 1.5 px. `allow_unregistered` / `--allow-unregistered`
+overrides it; the GUI asks. The check takes about 0.03 s.
+**Why.** Raw frames from a drifting mount (the author's Crescent Nebula H-alpha
+sequence, 33 frames, drifting 54 px/h) gave 4 passing and 129 flagged "candidates",
+all of them stars, with a calibrated threshold of S/N 55. Registered, the same
+frames gave none, at S/N 7.6. The measured drift, (58.9, 3.2) px, matched the
+registration script's (58.6, 3.2) px.
+**Status.** The refusal became the `check` mode of D43; the default now aligns.
+
+### D43. Built-in registration (0.9)
+**Decision.** FaintTrail aligns frames itself when the check (D42) finds them
+unregistered (`align = "auto"`, the default; also `always`, `check`, `off`;
+`fainttrail register` writes aligned frames). Reference: the middle frame in time.
+Stars as in D42, centroided in a 7 × 7 window; the starting offset by voting on
+star-pair offsets, with and without a 180° rotation (meridian flip); then a
+similarity transform (shift, rotation, scale; shift only with fewer than 12
+stars) fitted to nearest-neighbour matches with 3σ clipping. Resampling with
+bicubic convolution (Keys, a = −0.5); pixels whose source window leaves the frame
+become NaN, so the existing border handling applies. The offset to the detector is
+recorded (`REGDX`/`REGDY` semantics, added to any offset the frame already had),
+which keeps the detector flag working for hot pixels in raw frames; the plate
+solution of the first solved frame is transformed onto the reference grid. Frames
+with too few matched stars are dropped and reported. The GUI aligns at load time,
+so the viewer and the candidates share one pixel grid.
+**Why.** The author's sequences come straight from the camera; asking for an
+external registration step made every unguided or drifting sequence produce
+star-filled candidate lists. The original reason for D9 (duplicating stacking
+software adds risk) is met by testing: the aligner is checked against known shifts
+and against the regression pipeline.
+**Evidence.** Crescent Nebula, 33 raw frames drifting 54 px/h: aligned in 1.2 s on
+2 cores, star residual 0.09 px rms (the Python script: 0.25 px), threshold 7.53
+(Python-registered: 7.61), no candidates in either. Simulated drifting sequence
+with a mover: S/N 12.18 registered vs 12.48 aligned, threshold 6.43 vs 6.44, no
+extra candidates (unit test).
+**Not covered.** Tiled searches cannot align (they read a tile at a time): the CLI
+checks three frames first and searches untiled when alignment is needed. Frames of
+different sizes are aligned by the GUI and the library, but the CLI's tiled frame
+reader still requires equal sizes. Field rotation beyond a similarity (distortion)
+is not modelled. The small regression crops have too few stars (2–6) to register.
 
 ### D10. Registration offsets `REGDX`/`REGDY` (0.1.x)
 **Decision.** Frames may carry the offset from the registered grid back to the
@@ -101,6 +171,51 @@ to solve.
 `tools/solve_from_catalog.py` solves a stack from an approximate centre and a short
 catalogue extract (Gaia DR3) when no blind solver is at hand. Used for the
 Mariekebaan sequence (67 stars, 0.41″ rms).
+**Status.** Still in force for the catalogue itself; blind solving comes from ASTAP
+since 0.9 (D44).
+
+### D44. Plate solving through ASTAP; sky positions and MPC lines (0.9)
+**Decision.** When the frames carry no plate solution, FaintTrail writes the static
+sky (median of the aligned frames: deep, no cosmic rays, no movers) to a temporary
+FITS file and runs ASTAP on it (`astap_cli` preferred, else `astap`; found through
+`--astap`, `FAINTTRAIL_ASTAP`, the PATH or the usual install folders), passing the
+header's pointing and field size as hints. The TAN solution is read from ASTAP's
+`.wcs` or `.ini` output and applies directly to the aligned grid. `--solve auto`
+(default) solves only when needed and ASTAP is present; the GUI does the same.
+Candidates get RA/Dec (terminal table, GUI table, CSV) and `--mpc` writes MPC
+80-column lines (3 per passing candidate, temporary designations, no magnitude).
+**Why.** No star catalogue in FaintTrail (D8); ASTAP is free, runs on Windows,
+Linux and macOS, solves blind in seconds and is what the author already uses.
+Solving the stack instead of single frames is faster and more reliable.
+**Tested.** Unit test with a stand-in solver (POSIX), the leo-triplet-cut crop with
+its WCS removed and a stand-in returning the known solution: (21996) 1999 XP31 at
+11 18 26.56 +13 45 03.8 for 03:52:23 UTC, against MPChecker's geocentric 11 18 26.6
++13 45 01 (2.8″, within the case's 5″ tolerance; topocentric parallax is of that
+order). The hand-over to a real ASTAP is still to be checked on the author's PC.
+
+### D45. Photometric calibration against Gaia DR3 (0.9)
+**Decision.** With a plate solution, the Gaia DR3 stars of the field (G < 19 by
+default) are downloaded from VizieR with curl (no HTTP library in the core, D8;
+curl ships with Windows 10+, Linux and macOS) and cached per field; `--catalog`
+reads a saved extract instead. Field stars are measured on the static sky with
+the candidates' own PSF-weighted flux estimator (same Gaussian template, same
+bilinear sampling); blends, saturated cores (above 60 % of the brightest level),
+stars below S/N 20 and stars too close to the edge are skipped. The zero point is
+the 3σ-clipped median over stars of solar colour (0.5 < BP−RP < 1.3, widened
+when fewer than 8). Bands: Gaia G, Johnson V and Cousins R from G and BP−RP
+(Riello et al. 2021). Candidate fluxes are corrected for trailing within an
+exposure (the PSF estimator recovers (2s√π/L)·erf(L/4s) of a trail of length L).
+Magnitudes go to the terminal and GUI tables, the CSV (`mag`, `mag_err`,
+`mag_band`) and the MPC lines (columns 66–71).
+**Why.** MPChecker and the MPC compare magnitudes in V (or R/G); an instrumental
+magnitude cannot be compared. Calibrating on solar-coloured stars matches an
+asteroid's colour, so an unfiltered or luminance camera needs no colour term to
+first order.
+**Tested.** Simulation with the field stars as the catalogue: zero point within
+0.06 mag of the truth, star scatter < 0.08 mag; a mover trailing 2.2 px per
+exposure measured 18.88 against a true 18.90. Not yet run on real data (VizieR is
+not reachable from the development machine); first check: (4456) Mawson against
+its predicted V 19.5.
 
 ---
 
@@ -302,7 +417,7 @@ See CALIBRATION.md.
 
 ---
 
-## 9. Kernel features and GPU (step 5, open)
+## 9. Kernel features and GPU (steps 5 and 6)
 
 ### Fixed by the calibration study
 * Null passes remain full passes over the whole field and motion grid; no subset
@@ -354,6 +469,34 @@ down-weighting or rejection of poor frames is an open preprocessing item.
 sub-pixel study backend; later possibly a GPU backend built as a plug-in). `auto`
 never selects a registered backend.
 
+### D41. CUDA backend: one thread per pixel, exact order, bit-identical (0.9)
+**Decision.** The CUDA backend sums in the contract's order (frames ascending for
+each motion, motions ascending for the maximum), in single precision without fused
+multiply-adds, so it is bit-identical to the CPU backend rather than merely within
+tolerance. One thread per output pixel, 8 motions per frame sweep in registers,
+coverage tested per frame in the kernel, row bands when the frames do not fit in
+device memory, launches of about 4·10⁹ additions with the running maximum kept on
+the device. Off by default (`-DFAINTTRAIL_CUDA=ON`); `auto` prefers it when a device
+is usable and falls back to the CPU otherwise; the runtime is linked statically.
+**Why.** Exactness keeps the whole validation (regression baselines with `--strict`,
+tiled = untiled) valid on the GPU without new tolerances, and makes any
+discrepancy a bug rather than a judgement call. The per-thread order costs nothing
+on a GPU: each thread owns its pixel, so no reduction across threads is needed.
+**Testing without a GPU.** The per-pixel code is one header shared by the kernel and
+a host emulation of the complete algorithm (bands, launches); unit tests compare the
+emulation with the naive contract on every machine. The backend source was compiled
+with Clang's CUDA mode against CUDA 12.9 headers (no register spills, 44 registers;
+PTX assembles for sm_89 and sm_120), and a build with CUDA support was checked to
+fall back to the CPU without a driver. CI compiles it with nvcc 12.8.
+**Status.** Verified on the RTX 5080 (Windows, CUDA 12.8, sm_120, 2026-10-26):
+`check-backend --backend cuda` bit-identical to the reference in 4 of 4 checks
+(naive contract, curved shift table, simple reference, forced row bands). Still to
+`ctest`: all regression crops identical to their baselines on the GPU. Full Leo
+Triplet (22 × 4656 × 3520 px, 3376 motions, 4 passes): stacking 92.4 s on the 265K →
+7.4 s on the GPU (661 G adds/s; kernel alone 770 G adds/s), whole search 105 s →
+20.4 s. Preprocessing (static sky in the real and null runs) is now the largest
+cost (PROFILING.md); kernel tuning waits until that is addressed.
+
 ### Still open
 * **Half-precision frames** (halves traffic, breaks the current tolerance).
 * **Output**: best motion per pixel only, or several candidates per pixel.
@@ -362,7 +505,7 @@ never selects a registered backend.
   more for long sequences) becomes most of the run; the faster leave-out median is
   part of this decision.
 * **Baselines on the target PC**: rerun `fainttrail_kernel_bench` and the profile on
-  the 265K before deciding.
+  the 265K, and the same runs with `--backend cuda`.
 
 ---
 
@@ -396,3 +539,4 @@ never selects a registered backend.
 | 0.8 | threshold calibration: Gaussian-field tail, artefact screening; (4456) Mawson found |
 | 0.8.1 | kernel feature study (shifts, curved tracks, weights); backend registration |
 | 0.8.2 | explicit shift tables in the backend contract |
+| 0.9.0 | CUDA backend (verified bit-identical); built-in frame alignment; ASTAP plate solving, RA/Dec and MPC output |

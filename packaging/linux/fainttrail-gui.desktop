@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FaintTrail
+GenericName=Asteroid synthetic tracking
+Comment=Find faint asteroids and comets in image sequences
+Exec=fainttrail-gui %F
+Icon=fainttrail
+Categories=Science;Astronomy;Education;
+Terminal=false

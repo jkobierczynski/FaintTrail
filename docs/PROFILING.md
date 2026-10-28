@@ -230,10 +230,44 @@ tile at all when the whole sequence fits.
 The unbinned Leo sequence (4656 × 3520, about 4.6 GB untiled) can now be searched
 within any budget down to a few hundred MB.
 
+## Step 6: the CUDA backend on the target PC (0.9.0)
+
+Full-resolution Leo Triplet sequence (22 raw frames of 4656 × 3520 px, aligned by
+the built-in registration), 3376 motions, 4 passes (real + 3 null runs), on the
+author's PC: Intel Core Ultra 7 265K (20 threads), RTX 5080, Windows, CUDA 12.8.
+
+| | CPU backend (265K) | CUDA backend (RTX 5080) |
+|---|---:|---:|
+| stacking, 4 passes | 92.4 s | 7.4 s |
+| of which GPU kernel | | 6.3 s |
+| upload / download / setup | | 0.6 / 0.2 / 0.2 s |
+| throughput (whole pass) | 52.7 G adds/s | 661 G adds/s |
+| throughput (kernel alone) | | 770 G adds/s |
+| whole search | 105 s | 20.4 s |
+
+(The CPU run was on the same frames before the registration existed, so its
+threshold and candidates differ; the stacking work is identical. The 265K is
+about 6.5 times faster than the 2-core machine of the earlier sections.)
+
+Where the 20.4 s go now:
+
+| stage | time | share |
+|---|---:|---:|
+| null rebuild (preprocessing of the 3 time-shuffled runs) | 7.1 s | 35 % |
+| stacking (4 passes, GPU) | 7.4 s | 36 % |
+| static sky + other preprocessing | 2.9 s | 14 % |
+| loading and registration | 2.3 s | 11 % |
+| peaks, fit, refinement | 0.6 s | 3 % |
+
+Stacking is no longer the bottleneck: even an infinitely fast kernel would leave
+13 s. The leave-out median of the static sky (in the real preparation and in each
+null rebuild) is now the largest single cost, which makes the faster median and
+GPU preprocessing the next performance decisions; kernel tuning comes after.
+
 ## Reproducing
 
 ```sh
-cmake -S . -B build -DFAINTTRAIL_BUILD_TOOLS=ON && cmake --build build -j
+cmake -S . -B build -DFAINTTRAIL_BUILD_TOOLS=ON && cmake --build build --config Release -j
 FAINTTRAIL_REGRESSION_DATA=/path/to/data \
   ./build/fainttrail regress tests/regression/leo-triplet-full.case --profile
 ./build/fainttrail_kernel_bench --width 2328 --height 1760 --frames 20 --velocities 48
