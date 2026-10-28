@@ -101,16 +101,16 @@ ctest --test-dir build -C Release --output-on-failure
   searching. Registration needs at least about 6 stars per frame; frames without
   enough stars (clouds) are dropped and reported.
 * **Time** from `MJD-MID`, `MJD-OBS`, `DATE-OBS` (+`EXPTIME`) or `JD`.
-* **Plate solution**, from one of three sources: in the frames; solved by
-  [ASTAP](https://www.hnsky.org/astap.htm) when it is installed (since 0.9:
-  FaintTrail stacks the aligned frames and lets ASTAP solve the stack, using the
-  pointing (`RA`/`DEC` or `OBJCTRA`/`OBJCTDEC`) and field size (`FOCALLEN`,
-  `XPIXSZ`) in the FITS header as hints; `--solve auto|always|off`, `--astap`,
-  `--ra`/`--dec`/`--fov`; the GUI solves automatically); or borrowed with
-  `--wcs-from FILE` (GUI: *File › Import plate solution*). FILE can be any plate-solved image of the same
-  field, such as an ASTAP-solved stack: stars are matched, so different binning,
-  cropping, 90° rotations and mirroring are handled. SIP/PV distortion terms are
-  not used yet.
+* **Plate solution** (optional; without one, positions are in pixels): taken from
+  the frames when they have one; borrowed with `--wcs-from FILE` (GUI: *Import
+  plate solution*) from any solved image of the same field; or solved on request
+  with [ASTAP](https://www.hnsky.org/astap.htm): the **Plate solve (ASTAP)** button
+  in the GUI toolbar (Ctrl+P) or `--solve` on the command line. FaintTrail stacks
+  the aligned frames and lets ASTAP solve the stack, using the pointing
+  (`RA`/`DEC` or `OBJCTRA`/`OBJCTDEC`) and field size (`FOCALLEN`, `XPIXSZ`) of the
+  FITS header as hints (the GUI shows them for editing; `--ra`/`--dec`/`--fov` on
+  the command line). Solving after a search adds RA/Dec, rates and calibrated
+  magnitudes to the candidates without searching again.
 * **Optional TAN WCS** (`CD` matrix, `PC`+`CDELT` or `CDELT`+`CROTA2`) for sky
   coordinates, rates in arcsec/min and position angles.
 * **Optional** `REGDX`/`REGDY`: the offset from the registered grid back to the

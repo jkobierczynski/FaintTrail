@@ -45,6 +45,10 @@ static int run(QApplication& app) {
     QCommandLineOption shot("screenshot", "Save a screenshot after the search and quit.", "file");
     QCommandLineOption seed("seed", "Simulation seed for --demo.", "n", "1");
     QCommandLineOption wcsFrom("wcs-from", "Borrow the plate solution of a solved image.", "file");
+    QCommandLineOption solveOpt("solve", "Plate solve the frames with ASTAP after loading (before a --screenshot search).");
+    cli.addOption(solveOpt);
+    QCommandLineOption solveAfter("solve-after-search", "With --screenshot: search, then plate solve, then save.");
+    cli.addOption(solveAfter);
     cli.addOption(wcsFrom);
     cli.addOption(demo);
     cli.addOption(shot);
@@ -68,18 +72,33 @@ static int run(QApplication& app) {
 
     if (cli.isSet(shot)) {
         const QString path = cli.value(shot);
-        w.setOnSearchFinished([&w, path]() {
+        auto save = [&w, path]() {
             QTimer::singleShot(400, &w, [&w, path]() {
                 w.grab().save(path);
                 QApplication::quit();
             });
-        });
+        };
+        if (cli.isSet(solveAfter))
+            w.setOnSearchFinished([&w, save]() {
+                w.setOnSolveFinished(save);
+                w.solveNow();
+            });
+        else
+            w.setOnSearchFinished(save);
     }
 
     if (!files.isEmpty()) {
         bool ok = w.loadFiles(files);
         if (ok && cli.isSet(wcsFrom)) ok = w.importPlateSolutionFrom(cli.value(wcsFrom));
-        if (ok && cli.isSet(shot)) w.runSearch();
+        if (ok && cli.isSet(solveOpt)) {
+            const bool search_after = cli.isSet(shot);
+            w.setOnSolveFinished([&w, search_after]() {
+                if (search_after) w.runSearch();
+            });
+            w.solveNow();
+        } else if (ok && cli.isSet(shot)) {
+            w.runSearch();
+        }
     } else if (cli.isSet(demo)) {
         fainttrail::SimParams p;
         p.width = 512;

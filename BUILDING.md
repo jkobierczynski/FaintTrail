@@ -172,7 +172,7 @@ There is no CUDA on macOS; the CPU backend is used.
 
 | program | used for | without it |
 |---|---|---|
-| [ASTAP](https://www.hnsky.org/astap.htm) with a star database (e.g. D50) | plate solving frames that have no WCS (`--solve`) | positions in pixels only, unless the frames are solved or `--wcs-from` is used |
+| [ASTAP](https://www.hnsky.org/astap.htm) with a star database (e.g. D50) | plate solving on request (GUI button *Plate solve (ASTAP)*, `--solve`) | positions in pixels only, unless the frames are solved or `--wcs-from` is used |
 | `curl` (included in Windows 10 and 11, Linux, macOS) | downloading Gaia DR3 for the photometric calibration | instrumental magnitudes only, unless `--catalog FILE` is given |
 | Python 3 with numpy, scipy, astropy | the scripts in `tools/` (registration for the regression data, catalogue solving) | not needed for searching |
 

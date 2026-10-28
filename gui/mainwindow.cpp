@@ -24,6 +24,7 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
 #include <QSplitter>
@@ -34,6 +35,10 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QtConcurrent>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <cmath>
 
 #include "imageview.hpp"
@@ -81,6 +86,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(QString("FaintTrail %1").arg(version()));
     buildUi();
     connect(&m_searchWatcher, &QFutureWatcher<SearchOutcome>::finished, this, &MainWindow::searchFinished);
+    connect(&m_solveWatcher, &QFutureWatcher<SolveOutcome>::finished, this, &MainWindow::solveFinished);
     connect(&m_simWatcher, &QFutureWatcher<SimOutcome>::finished, this, &MainWindow::simulationFinished);
     m_progressTimer = new QTimer(this);
     m_progressTimer->setInterval(100);
@@ -101,6 +107,10 @@ void MainWindow::buildUi() {
     m_actImportWcs = fileMenu->addAction(tr("Import &plate solution..."), this, &MainWindow::importPlateSolution);
     m_actImportWcs->setEnabled(false);
     m_actImportWcs->setToolTip(tr("Borrow the WCS of a plate-solved image of the same field (e.g. an ASTAP-solved stack)"));
+    m_actSolve = fileMenu->addAction(tr("Plate &solve (ASTAP)..."), this, &MainWindow::plateSolve);
+    m_actSolve->setShortcut(QKeySequence(tr("Ctrl+P")));
+    m_actSolve->setEnabled(false);
+    m_actSolve->setToolTip(tr("Solve the stacked frames with ASTAP: gives RA/Dec, rates in \"/min and calibrated magnitudes"));
     fileMenu->addSeparator();
     m_actExportCand = fileMenu->addAction(tr("Export &candidates (CSV)..."), this, &MainWindow::exportCandidates);
     m_actExportTrack = fileMenu->addAction(tr("Export &tracklets (CSV)..."), this, &MainWindow::exportTracklets);
@@ -118,6 +128,7 @@ void MainWindow::buildUi() {
     tb->setMovable(false);
     tb->addAction(actOpen);
     tb->addAction(actSim);
+    tb->addAction(m_actSolve);
     tb->addAction(m_actImportWcs);
 
     // ---------------------------------------------------------- parameters dock
@@ -353,6 +364,10 @@ void MainWindow::openFolder() {
 }
 
 bool MainWindow::loadFiles(const QStringList& files) {
+    if (m_solveWatcher.isRunning()) {  // the solver still reads the current frames
+        m_status->setText(tr("Wait for the plate solving to finish"));
+        return false;
+    }
     std::vector<std::string> paths;
     for (const auto& f : files) paths.push_back(f.toStdString());
     QApplication::setOverrideCursor(Qt::WaitCursor);
@@ -385,6 +400,10 @@ bool MainWindow::loadFiles(const QStringList& files) {
 }
 
 void MainWindow::simulateDialog() {
+    if (m_solveWatcher.isRunning()) {
+        m_status->setText(tr("Wait for the plate solving to finish"));
+        return;
+    }
     QDialog dlg(this);
     dlg.setWindowTitle(tr("Simulate an observing sequence"));
     auto* form = new QFormLayout(&dlg);
@@ -501,6 +520,7 @@ void MainWindow::setFrames(std::vector<Frame> frames, const QString& origin) {
     m_blinkButton->setEnabled(n > 1);
     m_searchButton->setEnabled(n >= 5);
     m_actImportWcs->setEnabled(n > 0);
+    m_actSolve->setEnabled(n > 0);
     m_layer->setCurrentIndex(LayerFrame);
     if (n > 0) {
         const double span_min = (m_frames.back().mjd_mid - m_frames.front().mjd_mid) * 1440.0;
@@ -579,19 +599,8 @@ void MainWindow::runSearch() {
             return !m_cancel.load();
         };
         try {
-            const std::string first = frames->empty() ? std::string() : frames->front().source;
             out.prep = std::make_shared<Prepared>(
                 prepare(std::move(*frames), params, [&](double f, const std::string& s) { return cb(0.1 * f, s); }));
-            // no plate solution: solve the stacked static sky with ASTAP, if it is installed
-            if (!out.prep->wcs.valid && !find_astap().empty()) {
-                cb(0.1, "plate solving (ASTAP)");
-                SolveHints hints;
-                try {
-                    hints = hints_from_header(fits_layout(first).header, out.prep->height);
-                } catch (const std::exception&) {
-                }
-                out.solve = QString::fromStdString(solve_prepared(*out.prep, hints).message);
-            }
             out.result = std::make_shared<SearchResult>(
                 search(*out.prep, params, [&](double f, const std::string& s) { return cb(0.1 + 0.9 * f, s); }));
             // magnitudes calibrated against Gaia DR3 (downloaded once per field, then cached)
@@ -626,6 +635,7 @@ void MainWindow::pollProgress() {
     QMutexLocker lock(&m_progressMutex);
     m_progressBar->setValue(static_cast<int>(m_progress * 1000));
     if (m_searchWatcher.isRunning()) m_status->setText(tr("Searching: %1").arg(m_stage));
+    if (m_solveWatcher.isRunning()) m_status->setText(m_stage);
 }
 
 void MainWindow::searchFinished() {
@@ -950,6 +960,200 @@ bool MainWindow::importPlateSolutionFrom(const QString& path) {
         QApplication::restoreOverrideCursor();
         QMessageBox::warning(this, tr("Cannot use this plate solution"), QString::fromStdString(e.what()));
         return false;
+    }
+}
+
+// ------------------------------------------------------------------ plate solving
+// One click: a short dialog (ASTAP program, pointing and field size, prefilled from
+// the FITS header) and the solve runs in the background. A search result that is
+// already shown gets RA/Dec, rates and calibrated magnitudes without searching again.
+void MainWindow::plateSolve() {
+    if (m_frames.empty() || m_solveWatcher.isRunning() || m_searchWatcher.isRunning()) return;
+    QSettings settings("FaintTrail", "fainttrail-gui");
+    SolveHints hints;
+    try {
+        hints = hints_from_header(fits_layout(m_frames.front().source).header, m_frames.front().image.height);
+    } catch (const std::exception&) {
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Plate solve with ASTAP"));
+    auto* form = new QFormLayout(&dlg);
+    auto* intro = new QLabel(tr("The aligned frames are stacked and solved by ASTAP with its own star database.\n"
+                                "Pointing and field size help ASTAP; leave them empty for a blind solve."));
+    intro->setWordWrap(true);
+    form->addRow(intro);
+    auto* astapRow = new QHBoxLayout;
+    auto* astap = new QLineEdit(settings.value("astap", QString::fromStdString(find_astap())).toString());
+    astap->setPlaceholderText(tr("not found: install ASTAP or browse to astap_cli / astap"));
+    auto* browse = new QPushButton(tr("Browse..."));
+    astapRow->addWidget(astap, 1);
+    astapRow->addWidget(browse);
+    form->addRow(tr("ASTAP program"), astapRow);
+    connect(browse, &QPushButton::clicked, &dlg, [&] {
+        const QString f = QFileDialog::getOpenFileName(&dlg, tr("ASTAP program"), astap->text());
+        if (!f.isEmpty()) astap->setText(f);
+    });
+    auto* ra = new QLineEdit(hints.has_center ? QString::fromStdString(format_ra(hints.ra_deg, 1, ':')) : QString());
+    ra->setPlaceholderText(tr("e.g. 11:19:00 (hours) - empty: blind"));
+    auto* dec = new QLineEdit(hints.has_center ? QString::fromStdString(format_dec(hints.dec_deg, 0, ':')) : QString());
+    dec->setPlaceholderText(tr("e.g. +13:20:00"));
+    auto* fov = new QDoubleSpinBox;
+    fov->setRange(0.0, 30.0);
+    fov->setDecimals(3);
+    fov->setSuffix(QString::fromUtf8("°"));
+    fov->setSpecialValueText(tr("automatic"));
+    fov->setValue(hints.fov_deg);
+    form->addRow(tr("Centre RA"), ra);
+    form->addRow(tr("Centre Dec"), dec);
+    form->addRow(tr("Image height"), fov);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Solve"));
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    SolveOptions opt;
+    opt.astap = astap->text().trimmed().toStdString();
+    if (find_astap(opt.astap).empty()) {
+        QMessageBox::warning(this, tr("Plate solve"),
+                             tr("ASTAP was not found. Install it from https://www.hnsky.org/astap.htm with a star "
+                                "database (e.g. D50), or browse to astap_cli / astap."));
+        return;
+    }
+    settings.setValue("astap", astap->text().trimmed());
+    hints.has_center = false;
+    double r = 0, d = 0;
+    if (!ra->text().trimmed().isEmpty() || !dec->text().trimmed().isEmpty()) {
+        if (!parse_ra(ra->text().toStdString(), r) || !parse_dec(dec->text().toStdString(), d)) {
+            QMessageBox::warning(this, tr("Plate solve"), tr("Give RA as hours (11:19:00) or degrees, and Dec as +13:20:00."));
+            return;
+        }
+        hints.has_center = true;
+        hints.ra_deg = r;
+        hints.dec_deg = d;
+    }
+    hints.fov_deg = fov->value();
+    startSolve(hints, opt);
+}
+
+void MainWindow::solveNow() {
+    SolveHints hints;
+    try {
+        hints = hints_from_header(fits_layout(m_frames.front().source).header, m_frames.front().image.height);
+    } catch (const std::exception&) {
+    }
+    startSolve(hints, SolveOptions{});
+}
+
+void MainWindow::startSolve(const SolveHints& hints, const SolveOptions& opt) {
+    if (m_frames.empty() || m_solveWatcher.isRunning() || m_searchWatcher.isRunning()) return;
+    // what to solve: the static sky of the last search, or a median of the frames
+    auto prep = m_prep;
+    auto result = m_result ? std::make_shared<SearchResult>(*m_result) : nullptr;
+    std::shared_ptr<std::vector<const Image*>> imgs = std::make_shared<std::vector<const Image*>>();
+    if (!prep) {
+        const int n = frameCount(), k = std::min(n, 15);
+        for (int i = 0; i < k; ++i) imgs->push_back(&m_frames[static_cast<std::size_t>(k > 1 ? i * (n - 1) / (k - 1) : 0)].image);
+    }
+    {
+        QMutexLocker lock(&m_progressMutex);
+        m_stage = tr("Plate solving with ASTAP...");
+        m_progress = 0.0;
+    }
+    setBusy(true, tr("Plate solving with ASTAP..."));
+    m_actSolve->setEnabled(false);
+    m_solveWatcher.setFuture(QtConcurrent::run([this, prep, result, imgs, hints, opt]() {
+        SolveOutcome out;
+        try {
+            Image sky;
+            if (prep) {
+                sky = prep->static_sky;
+            } else {  // median of up to 15 frames: deep, without cosmic rays or movers
+                const auto& v = *imgs;
+                sky = Image(v[0]->width, v[0]->height);
+                std::vector<float> px(v.size());
+                for (std::size_t j = 0; j < sky.data.size(); ++j) {
+                    std::size_t m = 0;
+                    for (const Image* im : v)
+                        if (std::isfinite(im->data[j])) px[m++] = im->data[j];
+                    if (!m) {
+                        sky.data[j] = std::numeric_limits<float>::quiet_NaN();
+                        continue;
+                    }
+                    std::nth_element(px.begin(), px.begin() + static_cast<std::ptrdiff_t>(m / 2), px.begin() + static_cast<std::ptrdiff_t>(m));
+                    sky.data[j] = px[m / 2];
+                }
+            }
+            out.solve = solve_with_astap(sky, hints, opt);
+            if (out.solve.ok && prep && result) {
+                // RA/Dec, rates and magnitudes for the candidates already found
+                Prepared lite;
+                lite.width = prep->width;
+                lite.height = prep->height;
+                lite.fwhm_px = prep->fwhm_px;
+                lite.exptime_s = prep->exptime_s;
+                lite.t_h = prep->t_h;
+                lite.t_ref_mjd = prep->t_ref_mjd;
+                lite.static_sky = std::move(sky);
+                lite.wcs = out.solve.wcs;
+                update_sky_coordinates(lite, *result);
+                {
+                    QMutexLocker lock(&m_progressMutex);
+                    m_stage = tr("Photometry: Gaia DR3...");
+                }
+                try {
+                    double fra, fdec, frad;
+                    field_circle(lite, fra, fdec, frad);
+                    const PhotometryResult pr = calibrate_photometry(lite, fetch_gaia(fra, fdec, frad, 19.0), 'V');
+                    apply_photometry(lite, pr, *result);
+                    out.photometry = QString::fromStdString(pr.message);
+                } catch (const std::exception& e) {
+                    out.photometry = QString::fromStdString(std::string("no photometric calibration: ") + e.what());
+                }
+                out.result = result;
+            }
+        } catch (const std::exception& e) {
+            out.error = QString::fromStdString(e.what());
+        }
+        return out;
+    }));
+}
+
+void MainWindow::solveFinished() {
+    setBusy(false, QString());
+    m_actSolve->setEnabled(frameCount() > 0);
+    const SolveOutcome out = m_solveWatcher.result();
+    if (!out.error.isEmpty() || !out.solve.ok) {
+        const QString why = !out.error.isEmpty() ? out.error : QString::fromStdString(out.solve.message);
+        m_status->setText(tr("Plate solving failed: %1").arg(why));
+        if (!m_onSolveFinished) {
+            QMessageBox::warning(this, tr("Plate solve"), why);
+        } else {
+            auto cb = std::move(m_onSolveFinished);  // one-shot
+            m_onSolveFinished = nullptr;
+            cb();
+        }
+        return;
+    }
+    for (auto& f : m_frames) f.wcs = out.solve.wcs;  // the frames are aligned on one grid
+    if (m_prep) m_prep->wcs = out.solve.wcs;
+    if (out.result) m_result = out.result;
+    updateRateLabels();
+    QString s = m_summary->text();
+    s += tr("<br>plate solution: %1").arg(QString::fromStdString(out.solve.message).toHtmlEscaped());
+    m_summary->setText(s);
+    if (m_result) {
+        m_actExportMpc->setEnabled(m_result->has_sky);
+        refreshTable();
+        refreshDetails();
+    }
+    m_status->setText(QString::fromStdString(out.solve.message) + (out.photometry.isEmpty() ? QString() : "; " + out.photometry));
+    if (m_onSolveFinished) {
+        auto cb = std::move(m_onSolveFinished);  // one-shot
+        m_onSolveFinished = nullptr;
+        cb();
     }
 }
 

@@ -81,9 +81,9 @@ search options
                             so binning, cropping, 90-degree rotations and mirroring
                             are handled. Gives RA/Dec, rates and position angles.
   --wcs-scale S             frame pixels per pixel of FILE (default: from sizes)
-  --solve MODE              plate solving with ASTAP: auto (default: when the
-                            frames have no solution and ASTAP is installed),
-                            always, or off. The stacked static sky is solved.
+  --solve                   plate solve the stacked frames with ASTAP (optional;
+                            otherwise the frames' own solution or --wcs-from is
+                            used). Gives RA/Dec, rates and magnitudes.
   --astap PATH              ASTAP executable (default: astap_cli/astap on the
                             PATH, in the usual install folders, or FAINTTRAIL_ASTAP)
   --astap-db DIR            ASTAP star database folder (default: ASTAP's own)
@@ -147,7 +147,7 @@ struct Args {
     int integer(const std::string& k, int d) const { return static_cast<int>(std::lround(num(k, d))); }
 };
 
-const std::vector<std::string> kFlags = {"--all", "--quiet", "--help", "-h", "--strict", "--write-baseline", "--profile", "--no-tile", "--check-only", "--allow-unregistered"};
+const std::vector<std::string> kFlags = {"--all", "--quiet", "--help", "-h", "--strict", "--write-baseline", "--profile", "--no-tile", "--check-only", "--allow-unregistered", "--solve"};
 
 Args parse(int argc, char** argv, int start) {
     Args a;
@@ -389,18 +389,18 @@ SolveOptions cli_solve_options(const Args& a) {
     return o;
 }
 
-// "auto": solve when there is no plate solution and ASTAP is installed.
+// Plate solving is optional: only with --solve (the frames' own solution, or
+// --wcs-from, is used otherwise).
 bool want_solve(const Args& a, bool have_wcs) {
-    const std::string mode = a.str("--solve", "auto");
-    if (mode != "auto" && mode != "always" && mode != "off") throw std::runtime_error("--solve must be auto, always or off");
-    if (mode == "off") return false;
-    if (mode == "always") return true;
-    if (have_wcs) return false;
-    if (find_astap(a.str("--astap", "")).empty()) {
-        std::fprintf(stderr, "note: no plate solution in the frames and ASTAP not found: positions in pixels only "
-                             "(install ASTAP or use --wcs-from)\n");
+    if (!a.flag("--solve")) {
+        if (!have_wcs)
+            std::fprintf(stderr, "note: no plate solution: positions in pixels only (add --solve to solve with ASTAP, "
+                                 "or --wcs-from FILE)\n");
         return false;
     }
+    if (find_astap(a.str("--astap", "")).empty())
+        throw std::runtime_error("--solve: ASTAP not found (install it from https://www.hnsky.org/astap.htm with a star "
+                                 "database, or give its path with --astap)");
     return true;
 }
 

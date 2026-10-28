@@ -180,8 +180,12 @@ sky (median of the aligned frames: deep, no cosmic rays, no movers) to a tempora
 FITS file and runs ASTAP on it (`astap_cli` preferred, else `astap`; found through
 `--astap`, `FAINTTRAIL_ASTAP`, the PATH or the usual install folders), passing the
 header's pointing and field size as hints. The TAN solution is read from ASTAP's
-`.wcs` or `.ini` output and applies directly to the aligned grid. `--solve auto`
-(default) solves only when needed and ASTAP is present; the GUI does the same.
+`.wcs` or `.ini` output and applies directly to the aligned grid. Solving is
+optional and explicit (changed the same day from automatic): the **Plate solve
+(ASTAP)** toolbar button (Ctrl+P) opens a short dialog with the ASTAP program
+(remembered) and the header's pointing and field size for editing, and solves in
+the background; after a search it adds RA/Dec, rates and magnitudes to the shown
+candidates without searching again. On the command line `--solve`.
 Candidates get RA/Dec (terminal table, GUI table, CSV) and `--mpc` writes MPC
 80-column lines (3 per passing candidate, temporary designations, no magnitude).
 **Why.** No star catalogue in FaintTrail (D8); ASTAP is free, runs on Windows,

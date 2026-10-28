@@ -32,6 +32,13 @@ struct SearchOutcome {
     bool cancelled = false;
 };
 
+struct SolveOutcome {
+    fainttrail::SolveResult solve;
+    std::shared_ptr<fainttrail::SearchResult> result;  // with RA/Dec and magnitudes, if a search had run
+    QString photometry;
+    QString error;
+};
+
 struct SimOutcome {
     std::shared_ptr<fainttrail::SimResult> sim;
     fainttrail::SimParams params;
@@ -52,6 +59,10 @@ public:
     void setOnSearchFinished(std::function<void()> fn) { m_onSearchFinished = std::move(fn); }
     void selectCandidate(int row);
     bool importPlateSolutionFrom(const QString& path);
+    // Plate solve without the dialog (ASTAP found automatically, hints from the header);
+    // the callback runs once, after success or failure.
+    void solveNow();
+    void setOnSolveFinished(std::function<void()> fn) { m_onSolveFinished = std::move(fn); }
 
 private slots:
     void openFiles();
@@ -61,6 +72,8 @@ private slots:
     void exportCandidates();
     void exportMpc();
     void importPlateSolution();
+    void plateSolve();
+    void solveFinished();
     void exportTracklets();
     void searchFinished();
     void simulationFinished();
@@ -82,6 +95,7 @@ private:
     void refreshDetails();
     void updateRateLabels();
     void setBusy(bool busy, const QString& what);
+    void startSolve(const fainttrail::SolveHints& hints, const fainttrail::SolveOptions& opt);
     fainttrail::SearchParams currentParams() const;
     double pixelScale() const;
     int frameCount() const { return static_cast<int>(m_frames.size()); }
@@ -96,6 +110,7 @@ private:
     // async work
     QFutureWatcher<SearchOutcome> m_searchWatcher;
     QFutureWatcher<SimOutcome> m_simWatcher;
+    QFutureWatcher<SolveOutcome> m_solveWatcher;
     bool m_searchAfterSim = false;
     std::atomic<bool> m_cancel{false};
     QMutex m_progressMutex;
@@ -103,6 +118,7 @@ private:
     QString m_stage;
     QTimer* m_progressTimer = nullptr;
     std::function<void()> m_onSearchFinished;
+    std::function<void()> m_onSolveFinished;
 
     // widgets
     ImageView* m_view = nullptr;
@@ -133,6 +149,7 @@ private:
 
     QAction* m_actExportCand = nullptr;
     QAction* m_actImportWcs = nullptr;
+    QAction* m_actSolve = nullptr;
     QAction* m_actExportTrack = nullptr;
     QAction* m_actExportMpc = nullptr;
     QString m_obscode = "500";
