@@ -225,6 +225,8 @@ if(TARGET fainttrail_cli)
   install(TARGETS fainttrail_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 if(TARGET fainttrail-gui)
-  install(TARGETS fainttrail-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(TARGETS fainttrail-gui
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    BUNDLE DESTINATION .)  # macOS: fainttrail-gui.app at the top of the install prefix
 endif()
 install(FILES LICENSE README.md DEVELOPMENT.md BUILDING.md DESTINATION ${CMAKE_INSTALL_DOCDIR})

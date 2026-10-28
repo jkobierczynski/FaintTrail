@@ -48,7 +48,10 @@ jobs:
           # make sure the MSBuild integration is in the VS 2022 of the runner
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           Copy-Item "$cuda\extras\visual_studio_integration\MSBuildExtensions\*" "$vs\MSBuild\Microsoft\VC\v170\BuildCustomizations" -Force
+          # the installer sets these machine-wide, which later steps do not see;
+          # CUDA 12.8.props finds the toolkit through CUDA_PATH_V12_8
           "CUDA_PATH=$cuda" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "CUDA_PATH_V12_8=$cuda" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           "$cuda\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
       - uses: jurplel/install-qt-action@v4
         with:
@@ -60,7 +63,7 @@ jobs:
       - name: Configure
         shell: pwsh
         run: >
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T cuda=12.8
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 "-T cuda=$env:CUDA_PATH"
           -DFAINTTRAIL_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=${{ env.CUDA_ARCHS }}"
           "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
       - name: Build
