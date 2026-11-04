@@ -11,7 +11,7 @@ It is meant as an engine: a C++17 library with a stable C API, so that astrometr
 applications such as AstroFind or Siril can use it, plus a command-line tool and a
 small GUI for working with it directly.
 
-> Status: **0.9.0, CPU reference backend and a CUDA backend (bit-identical by design, not yet run on a GPU) behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
+> Status: **0.9.1, CPU reference backend and a CUDA backend (verified bit-identical on an RTX 5080, including the full-frame regression cases) behind a pluggable backend interface; validated on synthetic data and a real-data regression suite.**
 > It has not yet been checked end to end against real observations with known
 > results. Do not submit astrometry to the Minor Planet Center based on it without
 > verifying each object independently.

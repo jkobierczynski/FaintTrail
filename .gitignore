@@ -11,3 +11,6 @@ completeness.csv
 .vscode/
 .idea/
 *.user
+
+# full regression data (FAINTTRAIL_REGRESSION_DATA), not part of the repository
+/regression-data/

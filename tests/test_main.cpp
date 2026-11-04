@@ -177,6 +177,18 @@ static void test_fwhm_estimate() {
         const SimResult sim = simulate(s);
         const Prepared p = prepare(sim.frames, quick_search());
         CHECK(std::fabs(p.fwhm_px / fwhm - 1.0) < 0.12);
+        // blank (NaN) borders, as registered frames have: stars next to them must not
+        // enter the estimate (NaN in a median has no defined result; MSVC's standard
+        // library gave 3.0 px here, the fallback, where GCC's gave 1.78)
+        std::vector<Frame> blank = sim.frames;
+        for (auto& f : blank)
+            for (int y = 0; y < f.image.height; ++y)
+                for (int x = 0; x < 12; ++x) f.image.at(x, y) = std::nanf("");
+        SearchParams q = quick_search();
+        q.align = "off";
+        const Prepared pb = prepare(blank, q);
+        CHECK(std::isfinite(pb.fwhm_px));
+        CHECK(std::fabs(pb.fwhm_px / fwhm - 1.0) < 0.12);
     }
 }
 

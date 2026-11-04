@@ -279,6 +279,12 @@ RegressionOutcome run_regression_case(const RegressionCase& c, const RegressionO
         out.result = search(prep, p, sp);
         out.search_s = seconds_since(t0);
     }
+    // registration: the regression frames are registered, so nothing may be re-aligned
+    if (prep.alignment.applied)
+        add(false, true, "frames were re-aligned (they should be registered already): " + prep.alignment.summary());
+    else if (prep.registration.measured)
+        add(true, false, fmt("registration check: stars move (%.2f, %.2f) px first to last, %d matched", prep.registration.dx,
+                             prep.registration.dy, prep.registration.matched));
     out.profile = profile_text(prep, out.result, out.load_s);
     for (const auto& st : prep.timings) out.memory_mb = std::max(out.memory_mb, st.rss_mb);
     for (const auto& st : out.result.timings) out.memory_mb = std::max(out.memory_mb, st.rss_mb);

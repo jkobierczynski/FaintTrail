@@ -39,6 +39,17 @@ double estimate_fwhm(const Image& img, double noise_sigma) {
                 for (int dx = -1; dx <= 1; ++dx)
                     if ((dx || dy) && img.at(x + dx, y + dy) >= p) { is_max = false; break; }
             if (!is_max) continue;
+            // the core must be valid, and NaN (blank borders, masked pixels) is kept out
+            // of the annulus median and the moments: std::nth_element has no defined
+            // result for NaN, so different standard libraries gave different FWHMs
+            bool finite = true;
+            for (int dy = -R; dy <= R && finite; ++dy)
+                for (int dx = -R; dx <= R; ++dx)
+                    if (!std::isfinite(img.at(x + dx, y + dy))) {
+                        finite = false;
+                        break;
+                    }
+            if (!finite) continue;
             // local background from an annulus, isolation test
             std::vector<float> ann;
             bool isolated = true;
@@ -46,7 +57,7 @@ double estimate_fwhm(const Image& img, double noise_sigma) {
                 for (int dx = -B; dx <= B; ++dx) {
                     const double r = std::hypot(dx, dy);
                     const float v = img.at(x + dx, y + dy);
-                    if (r > R + 1 && r <= B) ann.push_back(v);
+                    if (r > R + 1 && r <= B && std::isfinite(v)) ann.push_back(v);
                     // another star nearby: a brighter pixel, or a separate local maximum
                     if (r > 0 && v > p) isolated = false;
                     if (r > 2 && r <= B && v > 0.3f * p && x + dx > 0 && y + dy > 0 && x + dx < w - 1 &&
@@ -58,7 +69,7 @@ double estimate_fwhm(const Image& img, double noise_sigma) {
                         if (local) isolated = false;
                     }
                 }
-            if (!isolated) continue;
+            if (!isolated || ann.size() < 20) continue;
             const double bg = detail::median_inplace(ann);
             const double peak = p - bg;
             // hot pixels and other sharp defects have no PSF wings
@@ -72,9 +83,11 @@ double estimate_fwhm(const Image& img, double noise_sigma) {
                 double s = 0, sxx = 0;
                 for (int dy = -B; dy <= B; ++dy)
                     for (int dx = -B; dx <= B; ++dx) {
+                        const float pv = img.at(x + dx, y + dy);
+                        if (!std::isfinite(pv)) continue;
                         const double r2 = dx * dx + dy * dy;
                         const double wgt = std::exp(-0.5 * r2 / sw2);
-                        const double v = (img.at(x + dx, y + dy) - bg) * wgt;
+                        const double v = (pv - bg) * wgt;
                         s += v;
                         sxx += v * r2;
                     }

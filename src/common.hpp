@@ -60,6 +60,7 @@ inline int thread_id() {
 }
 
 // Median of a vector (modified in place). Mean of the two middle values for even sizes.
+// The values must be finite: with NaN the result depends on the standard library.
 inline double median_inplace(std::vector<float>& v) {
     if (v.empty()) return 0.0;
     const std::size_t n = v.size(), mid = n / 2;

@@ -289,6 +289,19 @@ FaintTrail uses its own RNG (no `std::shuffle`/distributions), ties in the stack
 go to the lowest motion index, and every optimisation since 0.5 has been required
 to give **bit-identical** results to the plain implementation.
 
+### D22a. No NaN into sorting or medians (0.9)
+**Decision.** Values passed to `std::sort`/`std::nth_element` (medians) must be
+finite. The PSF-width estimate now requires a finite core around each star and
+leaves NaN out of the annulus background and the moments.
+**Why.** On the author's Windows PC the full Mariekebaan and Leo Triplet cases
+failed (Mariekebaan not found, threshold 6.64 instead of 7.02) while Linux, MinGW
+under Wine and Clang with libc++ all reproduced the baselines, on the CPU and the
+GPU alike. Stars next to the blank (NaN) registration borders put NaN into the
+annulus median; `nth_element` with NaN has no defined result, and MSVC's standard
+library gave a NaN width, which fell back to the 3.0 px default instead of 1.78 px.
+After the fix the Linux estimate is 1.76 px, the regression cases still pass, and
+the full Mariekebaan baseline changed from 88 to 85 flagged candidates.
+
 ### D23. Every optimisation is checked against an independent implementation
 `run_pass_naive` (one pixel at a time) and `run_pass_simple` (the 0.2–0.4 kernel)
 are kept as references; unit tests compare bit for bit, including awkward block
@@ -500,6 +513,11 @@ Triplet (22 × 4656 × 3520 px, 3376 motions, 4 passes): stacking 92.4 s on the 
 7.4 s on the GPU (661 G adds/s; kernel alone 770 G adds/s), whole search 105 s →
 20.4 s. Preprocessing (static sky in the real and null runs) is now the largest
 cost (PROFILING.md); kernel tuning waits until that is addressed.
+Full regression cases on the RTX 5080 (2026-11-04, after the fix of D22a): Ceres,
+Mariekebaan and Leo Triplet all pass with `--strict` against the Linux CPU
+baselines; Mariekebaan reports identical results with `--backend cpu` and
+`--backend cuda`. The binned Leo case runs in 5.0 s in total (175 s on the 2-core
+development machine's CPU).
 
 ### Still open
 * **Half-precision frames** (halves traffic, breaks the current tolerance).
@@ -544,3 +562,4 @@ cost (PROFILING.md); kernel tuning waits until that is addressed.
 | 0.8.1 | kernel feature study (shifts, curved tracks, weights); backend registration |
 | 0.8.2 | explicit shift tables in the backend contract |
 | 0.9.0 | CUDA backend (verified bit-identical); built-in frame alignment; ASTAP plate solving, RA/Dec and MPC output |
+| 0.9.1 | PSF width estimate independent of the C++ standard library (NaN borders; fixes the full-frame cases on Windows); regression report shows the registration check; full regression cases verified on the RTX 5080 |

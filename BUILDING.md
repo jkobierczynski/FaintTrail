@@ -209,7 +209,7 @@ To make a release:
 *Actions › release › Run workflow* builds the same packages as downloadable
 artifacts without publishing anything, to try the packaging. The packaging
 scripts are in `packaging/` and also work locally, e.g.
-`bash packaging/package-linux.sh 0.9.0 build dist`.
+`bash packaging/package-linux.sh 0.9.1 build dist`.
 
 ## Paths in the other documents
 
