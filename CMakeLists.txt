@@ -52,6 +52,11 @@ target_compile_definitions(fainttrail PRIVATE
 if(MSVC)
   target_compile_options(fainttrail PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:/W4>")
 else()
+  # -ffp-contract=off: no fused multiply-adds, so every platform and every code path
+  # (tiled and untiled, CPU and GPU) rounds identically. GCC does this in ISO mode
+  # already; Clang contracts by default, which on ARM (Apple silicon) made the
+  # tiled and untiled searches differ in the last bit of a refined position.
+  target_compile_options(fainttrail PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>")
   target_compile_options(fainttrail PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic>"
     $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:-O3>)
   if(FAINTTRAIL_NATIVE)

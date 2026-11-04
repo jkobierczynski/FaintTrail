@@ -302,6 +302,16 @@ library gave a NaN width, which fell back to the 3.0 px default instead of 1.78 
 After the fix the Linux estimate is 1.76 px, the regression cases still pass, and
 the full Mariekebaan baseline changed from 88 to 85 flagged candidates.
 
+### D22b. No fused multiply-adds on the CPU either (0.9.1)
+**Decision.** The library is compiled with `-ffp-contract=off` (GCC, Clang); MSVC
+does not contract by default; the CUDA code has `--fmad=false` (D41).
+**Why.** Clang contracts `a*b+c` into one rounding by default, wherever the
+optimiser sees fit, so the same expression could round differently in the tiled
+and the untiled code path. On Apple silicon (macOS CI) a refined candidate position
+differed in the last bit between them; reproduced with Clang for ARM under QEMU,
+and gone with the flag. Exact equality across code paths and platforms is what
+the regression baselines and the tiled = untiled test rely on.
+
 ### D23. Every optimisation is checked against an independent implementation
 `run_pass_naive` (one pixel at a time) and `run_pass_simple` (the 0.2–0.4 kernel)
 are kept as references; unit tests compare bit for bit, including awkward block
@@ -562,4 +572,4 @@ development machine's CPU).
 | 0.8.1 | kernel feature study (shifts, curved tracks, weights); backend registration |
 | 0.8.2 | explicit shift tables in the backend contract |
 | 0.9.0 | CUDA backend (verified bit-identical); built-in frame alignment; ASTAP plate solving, RA/Dec and MPC output |
-| 0.9.1 | PSF width estimate independent of the C++ standard library (NaN borders; fixes the full-frame cases on Windows); regression report shows the registration check; full regression cases verified on the RTX 5080 |
+| 0.9.1 | PSF width estimate independent of the C++ standard library (NaN borders; fixes the full-frame cases on Windows); no fused multiply-adds with Clang (`-ffp-contract=off`; tiled = untiled on Apple silicon); regression report shows the registration check; full regression cases verified on the RTX 5080 |
