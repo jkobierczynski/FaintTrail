@@ -40,6 +40,7 @@ add_library(fainttrail
   src/solve.cpp
   src/process.cpp
   src/photometry.cpp
+  src/parallax.cpp
   src/c_api.cpp)
 add_library(fainttrail::fainttrail ALIAS fainttrail)
 

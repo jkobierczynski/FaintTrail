@@ -154,6 +154,30 @@ void MainWindow::buildUi() {
     mf->addRow(m_rateLabel);
     connect(m_vmin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &MainWindow::updateRateLabels);
     connect(m_vmax, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &MainWindow::updateRateLabels);
+    {
+        QSettings st("FaintTrail", "fainttrail-gui");
+        m_neo = new QDoubleSpinBox;
+        m_neo->setRange(0.0, 1.0);
+        m_neo->setDecimals(4);
+        m_neo->setSingleStep(0.001);
+        m_neo->setSuffix(" AU");
+        m_neo->setSpecialValueText(tr("off"));
+        m_neo->setValue(st.value("neo_min_dist_au", 0.0).toDouble());
+        m_neo->setToolTip(tr("Near-Earth objects: also search the curved tracks that the diurnal parallax gives "
+                             "objects as close as this distance (e.g. 0.002 AU). Needs a plate solution and the "
+                             "observer's site."));
+        m_site = new QLineEdit(st.value("site").toString());
+        m_site->setPlaceholderText(tr("from the FITS header"));
+        m_site->setToolTip(tr("Observer's site for the near-Earth search: latitude, longitude (east positive) in "
+                              "degrees and optionally the height in m, e.g. 50.93, 5.39, 40. Empty: SITELAT/SITELONG "
+                              "or OBSGEO-B/L/H from the FITS header."));
+        mf->addRow(tr("Near-Earth, down to"), m_neo);
+        mf->addRow(tr("Site"), m_site);
+        connect(m_neo, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [this](double v) { QSettings("FaintTrail", "fainttrail-gui").setValue("neo_min_dist_au", v); });
+        connect(m_site, &QLineEdit::editingFinished, this,
+                [this]() { QSettings("FaintTrail", "fainttrail-gui").setValue("site", m_site->text().trimmed()); });
+    }
     pl->addWidget(motion);
 
     auto* det = new QGroupBox(tr("Detection"));
@@ -566,6 +590,7 @@ SearchParams MainWindow::currentParams() const {
     p.fwhm_px = m_fwhm->value();
     p.threads = m_threads->value();
     p.backend = m_backend->currentData().toString().toStdString();
+    p.neo_min_dist_au = m_neo->value();
     p.keep_residuals = true;  // the frame viewer shows residuals
     return p;
 }
@@ -587,8 +612,29 @@ void MainWindow::runSearch() {
         m_stage = tr("starting");
     }
     setBusy(true, tr("Searching..."));
+    // near-Earth search: the plate solution and the site are needed before searching
+    ObserverSite site;
+    if (params.neo_min_dist_au > 0.0) {
+        if (!m_frames.front().wcs.valid) {
+            QMessageBox::warning(this, tr("Near-Earth search"),
+                                 tr("The near-Earth search needs a plate solution: plate solve first (Ctrl+P), or set "
+                                    "Near-Earth to off."));
+            return;
+        }
+        const QString text = m_site->text().trimmed();
+        try {
+            if (!text.isEmpty()) site = parse_site(text.toStdString());
+            else if (!site_from_header(fits_layout(m_frames.front().source).header, site))
+                throw std::runtime_error("the FITS header has no SITELAT/SITELONG or OBSGEO keywords");
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, tr("Near-Earth search"),
+                                 tr("The observer's site is needed: enter latitude, longitude (east positive) under "
+                                    "Site.\n\n%1").arg(QString::fromLocal8Bit(e.what())));
+            return;
+        }
+    }
     auto frames = std::make_shared<std::vector<Frame>>(m_frames);
-    m_searchWatcher.setFuture(QtConcurrent::run([this, frames, params]() {
+    m_searchWatcher.setFuture(QtConcurrent::run([this, frames, params, site]() {
         SearchOutcome out;
         auto cb = [this](double f, const std::string& stage) {
             {
@@ -601,6 +647,7 @@ void MainWindow::runSearch() {
         try {
             out.prep = std::make_shared<Prepared>(
                 prepare(std::move(*frames), params, [&](double f, const std::string& s) { return cb(0.1 * f, s); }));
+            if (params.neo_min_dist_au > 0.0) set_parallax_model(*out.prep, site);
             out.result = std::make_shared<SearchResult>(
                 search(*out.prep, params, [&](double f, const std::string& s) { return cb(0.1 + 0.9 * f, s); }));
             // magnitudes calibrated against Gaia DR3 (downloaded once per field, then cached)
@@ -805,15 +852,30 @@ void MainWindow::refreshMarkers() {
         for (std::size_t k = 0; k < m_result->candidates.size(); ++k) {
             const auto& c = m_result->candidates[k];
             Marker m;
-            m.x = c.x + c.vx_pxh * t;
-            m.y = c.y + c.vy_pxh * t;
+            if (m_prep) candidate_position_at(*m_prep, c, t, m.x, m.y);
+            else {
+                m.x = c.x + c.vx_pxh * t;
+                m.y = c.y + c.vy_pxh * t;
+            }
             m.radius = r;
             m.color = c.ok ? QColor(80, 220, 120) : QColor(240, 160, 60);
             m.label = QString::number(c.id);
             m.selected = static_cast<int>(k) == m_selected;
             if (m.selected && m_prep) {
-                const double t0 = m_prep->t_h.front(), t1 = m_prep->t_h.back();
-                m.track = {QPointF(c.x + c.vx_pxh * t0, c.y + c.vy_pxh * t0), QPointF(c.x + c.vx_pxh * t1, c.y + c.vy_pxh * t1)};
+                if (c.inv_dist_au != 0.0) {
+                    // curved (near-Earth) track: through every frame position, in time order
+                    std::vector<std::pair<double, int>> order;
+                    for (int i = 0; i < m_prep->nframes; ++i) order.emplace_back(m_prep->t_h[static_cast<std::size_t>(i)], i);
+                    std::sort(order.begin(), order.end());
+                    for (const auto& o : order) {
+                        double x, y;
+                        candidate_position(*m_prep, c, o.second, x, y);
+                        m.track.push_back(QPointF(x, y));
+                    }
+                } else {
+                    const double t0 = m_prep->t_h.front(), t1 = m_prep->t_h.back();
+                    m.track = {QPointF(c.x + c.vx_pxh * t0, c.y + c.vy_pxh * t0), QPointF(c.x + c.vx_pxh * t1, c.y + c.vy_pxh * t1)};
+                }
             }
             if (!c.ok && !m.selected) m.color.setAlpha(170);
             markers.push_back(m);
@@ -882,7 +944,9 @@ void MainWindow::tableSelectionChanged() {
         double t = 0.0;
         if ((layer == LayerFrame || layer == LayerResidual) && m_prep)
             t = m_prep->t_h[static_cast<std::size_t>(std::clamp(m_frameSlider->value(), 0, frameCount() - 1))];
-        m_view->centerOn(c.x + c.vx_pxh * t, c.y + c.vy_pxh * t);
+        double cx = c.x + c.vx_pxh * t, cy = c.y + c.vy_pxh * t;
+        if (m_prep) candidate_position_at(*m_prep, c, t, cx, cy);
+        m_view->centerOn(cx, cy);
     }
 }
 
@@ -896,7 +960,7 @@ void MainWindow::refreshDetails() {
     if (!m_result || !m_prep || m_selected < 0 || m_selected >= static_cast<int>(m_result->candidates.size())) return;
     const auto& c = m_result->candidates[static_cast<std::size_t>(m_selected)];
     for (int k = 0; k < 3; ++k) {
-        const Image cut = stack_cutout(*m_prep, c.x, c.y, c.vx_pxh, c.vy_pxh, 10, true, k);
+        const Image cut = stack_cutout(*m_prep, c.x, c.y, c.vx_pxh, c.vy_pxh, 10, true, k, c.inv_dist_au);
         m_cut[k]->setPixmap(cutoutPixmap(cut, 5));
     }
     const double scale = pixelScale();
@@ -909,6 +973,14 @@ void MainWindow::refreshDetails() {
         html += tr("RA %1 Dec %2 (± %3\")<br>").arg(sexagesimal(c.ra_deg, true), sexagesimal(c.dec_deg, false)).arg(c.pos_err_px * scale, 0, 'f', 2);
     html += tr("motion %1, %2 px/h (± %3)<br>").arg(c.vx_pxh, 0, 'f', 2).arg(c.vy_pxh, 0, 'f', 2).arg(c.vel_err_pxh, 0, 'f', 2);
     if (scale > 0) html += tr("rate %1\"/min, PA %2°<br>").arg(c.rate_arcsec_min, 0, 'f', 3).arg(c.pa_deg, 0, 'f', 1);
+    if (m_result->n_distances > 1) {
+        if (c.distance_measured())
+            html += tr("<b>near-Earth: distance %1 AU</b> (1/Δ = %2 ± %3 per AU; curved track)<br>")
+                        .arg(1.0 / c.inv_dist_au, 0, 'f', 4).arg(c.inv_dist_au, 0, 'f', 1).arg(c.inv_dist_err_au, 0, 'f', 1);
+        else
+            html += tr("distance: no measurable parallax (1/Δ = %1 ± %2 per AU)<br>")
+                        .arg(c.inv_dist_au, 0, 'f', 1).arg(c.inv_dist_err_au, 0, 'f', 1);
+    }
     html += tr("<br>S/N %1 (grid %2, threshold %3)<br>").arg(c.snr, 0, 'f', 2).arg(c.snr_coarse, 0, 'f', 2).arg(m_result->threshold_snr, 0, 'f', 2);
     html += tr("halves %1 / %2 (expected ≈ %3 each)<br>").arg(c.snr_half1, 0, 'f', 2).arg(c.snr_half2, 0, 'f', 2).arg(c.snr_coarse / std::sqrt(2.0), 0, 'f', 2);
     html += tr("largest single-frame share %1<br>").arg(c.max_frame_fraction, 0, 'f', 3);

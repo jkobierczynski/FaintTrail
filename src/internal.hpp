@@ -102,16 +102,36 @@ struct RefinedCandidate {
     std::vector<double> contrib;  // per-frame track values (for the ghost test)
 };
 
+// Track position in frame i: x + vx t_i (+ q * parallax_i for near-Earth trial
+// distances q = 1/Delta in 1/AU). q == 0 evaluates exactly the straight line.
+inline void track_pos(const Prepared& p, int i, double x, double y, double vx, double vy, double q, double& ox,
+                      double& oy) {
+    const double t = p.t_h[static_cast<std::size_t>(i)];
+    ox = x + vx * t;
+    oy = y + vy * t;
+    if (q != 0.0) {
+        ox += q * p.par_x[static_cast<std::size_t>(i)];
+        oy += q * p.par_y[static_cast<std::size_t>(i)];
+    }
+}
+// The parallax displacement (1 AU) at time t, interpolated linearly between frames.
+void parallax_at(const Prepared& p, double t, double& px, double& py);
+
+// One stacking pass. `inv_dist`: trial inverse distances; with more than one (or a
+// non-zero one) the pass runs over all (q, v) pairs through an explicit shift table,
+// motion index j = k * grid.size() + iv for q[k] and grid[iv].
 PassOutput run_pass(SearchBackend& backend, const Prepared& p, const std::vector<std::pair<double, double>>& grid,
                     const std::vector<double>& t, const SearchParams& params, const ProgressFn& progress, double f0,
-                    double f1, const std::string& stage);
+                    double f1, const std::string& stage, const std::vector<double>* inv_dist = nullptr);
 std::vector<Peak> find_peaks(const PassOutput& pass, float floor, int radius, int edge, std::size_t max_peaks);
 TrackEval track_snr(const Prepared& p, double x, double y, double vx, double vy, int which,
-                    std::vector<double>* per_frame = nullptr);
+                    std::vector<double>* per_frame = nullptr, double q = 0.0);
+// q0, dq: trial inverse distance of the peak and the spacing of the distance grid
+// (0 for the ordinary straight-line search).
 Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, double>& v0, double dv,
-                 const SearchParams& params);
+                 const SearchParams& params, double q0 = 0.0, double dq = 0.0);
 RefinedCandidate refine_with_contrib(const Prepared& p, const Peak& pk, const std::pair<double, double>& v0, double dv,
-                                     const SearchParams& params);
+                                     const SearchParams& params, double q0 = 0.0, double dq = 0.0);
 std::vector<std::vector<double>> null_time_orders(const std::vector<double>& t_h, int runs, std::uint64_t seed);
 void set_threshold(const Prepared& p, const SearchParams& params, std::size_t n_velocities, int runs,
                    const std::vector<float>& pooled, SearchResult& res);
@@ -121,7 +141,8 @@ void sky_coordinates(const Prepared& p, Candidate& c);
 // Artefact flags (edge, detector, single): such null peaks are left out of the tail fit.
 bool is_artefact(const Candidate& c);
 // The same artefact tests at a peak's grid position and motion, without refinement.
-bool is_artefact_peak(const Prepared& p, const Peak& pk, const std::pair<double, double>& v, const SearchParams& params);
+bool is_artefact_peak(const Prepared& p, const Peak& pk, const std::pair<double, double>& v, const SearchParams& params,
+                      double q = 0.0);
 // Number of strongest null peaks per run to test for artefacts.
 int null_tested_count(const SearchParams& params, std::size_t npeaks);
 // Pool the null peaks of one run, leaving out those marked as artefacts.

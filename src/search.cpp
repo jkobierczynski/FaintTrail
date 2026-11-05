@@ -28,6 +28,7 @@
 #include "psf.hpp"
 #include "random.hpp"
 #include "fainttrail/backend.hpp"
+#include "fainttrail/parallax.hpp"
 #include "fainttrail/search.hpp"
 
 namespace fainttrail {
@@ -63,11 +64,37 @@ namespace detail {
 // (0..1) is mapped onto [f0, f1] of the caller's progress.
 PassOutput run_pass(SearchBackend& backend, const Prepared& p, const std::vector<std::pair<double, double>>& grid,
                     const std::vector<double>& t, const SearchParams& params, const ProgressFn& progress, double f0,
-                    double f1, const std::string& stage) {
+                    double f1, const std::string& stage, const std::vector<double>* inv_dist) {
     StackPass pass;
     pass.frames = &p.filtered;
     pass.t_h = &t;
     pass.velocities = &grid;
+    ShiftTable table;
+    if (inv_dist && (inv_dist->size() > 1 || (inv_dist->size() == 1 && (*inv_dist)[0] != 0.0))) {
+        // curved tracks: round(v t_i + q par_i); for q = 0 exactly the straight-line shifts
+        const int nv = static_cast<int>(grid.size()), n = p.nframes;
+        if (static_cast<int>(p.par_x.size()) != n) throw std::runtime_error("near-Earth pass without a parallax model");
+        table.resize(nv * static_cast<int>(inv_dist->size()), n);
+        for (std::size_t k = 0; k < inv_dist->size(); ++k) {
+            const double q = (*inv_dist)[k];
+            for (int iv = 0; iv < nv; ++iv) {
+                const int j = static_cast<int>(k) * nv + iv;
+                const auto& v = grid[static_cast<std::size_t>(iv)];
+                for (int i = 0; i < n; ++i) {
+                    const double ti = t[static_cast<std::size_t>(i)];
+                    double dx = v.first * ti, dy = v.second * ti;
+                    if (q != 0.0) {
+                        dx += q * p.par_x[static_cast<std::size_t>(i)];
+                        dy += q * p.par_y[static_cast<std::size_t>(i)];
+                    }
+                    table.x(j, i) = static_cast<int>(std::lround(dx));
+                    table.y(j, i) = static_cast<int>(std::lround(dy));
+                }
+            }
+        }
+        pass.shifts = &table;
+        pass.velocities = nullptr;
+    }
     pass.min_count = std::max(3, static_cast<int>(std::ceil(params.min_coverage * p.nframes)));
     pass.threads = params.threads;
     ProgressFn cb;
@@ -113,7 +140,7 @@ double gauss_q(double z) { return 0.5 * std::erfc(z / std::sqrt(2.0)); }
 
 // S/N along a sub-pixel track. which: 0 all, 1 first half (t<0), 2 second half.
 TrackEval track_snr(const Prepared& p, double x, double y, double vx, double vy, int which,
-                    std::vector<double>* per_frame) {
+                    std::vector<double>* per_frame, double q) {
     double sum = 0.0;
     int count = 0;
     if (per_frame) per_frame->assign(static_cast<std::size_t>(p.nframes), NAN);
@@ -121,7 +148,9 @@ TrackEval track_snr(const Prepared& p, double x, double y, double vx, double vy,
         const double t = p.t_h[static_cast<std::size_t>(i)];
         if (which == 1 && t >= 0.0) continue;
         if (which == 2 && t < 0.0) continue;
-        const float v = detail::bilinear(p.filtered[static_cast<std::size_t>(i)], x + vx * t, y + vy * t);
+        double px, py;
+        track_pos(p, i, x, y, vx, vy, q, px, py);
+        const float v = detail::bilinear(p.filtered[static_cast<std::size_t>(i)], px, py);
         if (!std::isfinite(v)) continue;
         sum += v;
         ++count;
@@ -135,12 +164,13 @@ TrackEval track_snr(const Prepared& p, double x, double y, double vx, double vy,
 
 // Field edge: in registered frames the blank border moves with the drift; tracks
 // that touch it in more than a few frames pick up edge residuals.
-bool edge_flag(const Prepared& p, double bx, double by, double bvx, double bvy) {
+bool edge_flag(const Prepared& p, double bx, double by, double bvx, double bvy, double q = 0.0) {
     const int r = static_cast<int>(std::ceil(2.0 * p.fwhm_px)) + 1;
     int near_blank = 0, total = 0;
     for (int i = 0; i < p.nframes; ++i) {
-        const double t = p.t_h[static_cast<std::size_t>(i)];
-        const int xi = static_cast<int>(std::lround(bx + bvx * t)), yi = static_cast<int>(std::lround(by + bvy * t));
+        double px, py;
+        track_pos(p, i, bx, by, bvx, bvy, q, px, py);
+        const int xi = static_cast<int>(std::lround(px)), yi = static_cast<int>(std::lround(py));
         // a residual pixel is blank exactly where the background-subtracted frame or
         // the static sky is undefined (see build_stage)
         const Image& sub = detail::sub_frames(p)[static_cast<std::size_t>(i)];
@@ -163,13 +193,15 @@ bool edge_flag(const Prepared& p, double bx, double by, double bvx, double bvy) 
 // with the hypothesis "fixed on the sensor" (warm pixel or defect carried along by
 // the registration, which follows the mount's drift and periodic error). If a
 // fixed detector position explains the signal about as well, reject.
-bool detector_flag(const Prepared& p, double bx, double by, double bvx, double bvy, double track_snr_all) {
+bool detector_flag(const Prepared& p, double bx, double by, double bvx, double bvy, double track_snr_all,
+                   double q = 0.0) {
     if (static_cast<int>(p.reg_dx.size()) != p.nframes) return false;
     double mx = 0, my = 0;
     for (int i = 0; i < p.nframes; ++i) {
-        const double t = p.t_h[static_cast<std::size_t>(i)];
-        mx += bx + bvx * t + p.reg_dx[static_cast<std::size_t>(i)];
-        my += by + bvy * t + p.reg_dy[static_cast<std::size_t>(i)];
+        double px, py;
+        track_pos(p, i, bx, by, bvx, bvy, q, px, py);
+        mx += px + p.reg_dx[static_cast<std::size_t>(i)];
+        my += py + p.reg_dy[static_cast<std::size_t>(i)];
     }
     mx /= p.nframes;
     my /= p.nframes;
@@ -194,9 +226,10 @@ bool detector_flag(const Prepared& p, double bx, double by, double bvx, double b
 
 // The artefact tests (single, edge, detector) at a peak's grid position and
 // motion, without refinement: used to keep artefacts out of the null tail.
-bool is_artefact_peak(const Prepared& p, const Peak& pk, const std::pair<double, double>& v, const SearchParams& params) {
+bool is_artefact_peak(const Prepared& p, const Peak& pk, const std::pair<double, double>& v, const SearchParams& params,
+                      double q) {
     std::vector<double> per_frame;
-    const TrackEval all = track_snr(p, pk.x, pk.y, v.first, v.second, 0, &per_frame);
+    const TrackEval all = track_snr(p, pk.x, pk.y, v.first, v.second, 0, &per_frame, q);
     double pos_sum = 0.0, maxc = 0.0;
     for (double x : per_frame) {
         if (!std::isfinite(x)) continue;
@@ -205,16 +238,20 @@ bool is_artefact_peak(const Prepared& p, const Peak& pk, const std::pair<double,
     }
     const double frac = pos_sum > 0.0 ? maxc / pos_sum : 1.0;
     if (p.nframes >= 8 && frac > params.max_frame_fraction) return true;
-    if (edge_flag(p, pk.x, pk.y, v.first, v.second)) return true;
-    return detector_flag(p, pk.x, pk.y, v.first, v.second, all.snr);
+    if (edge_flag(p, pk.x, pk.y, v.first, v.second, q)) return true;
+    return detector_flag(p, pk.x, pk.y, v.first, v.second, all.snr, q);
 }
 
 Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, double>& v0, double dv,
-                 const SearchParams& params) {
+                 const SearchParams& params, double q0, double dq) {
     Candidate c;
     c.snr_coarse = pk.snr;
-    double bx = pk.x, by = pk.y, bvx = v0.first, bvy = v0.second;
-    double best = track_snr(p, bx, by, bvx, bvy, 0).snr;
+    double bx = pk.x, by = pk.y, bvx = v0.first, bvy = v0.second, bq = q0;
+    // S/N of the track at the current inverse distance bq
+    auto S = [&](double x, double y, double vx, double vy, int which = 0) {
+        return track_snr(p, x, y, vx, vy, which, nullptr, bq).snr;
+    };
+    double best = S(bx, by, bvx, bvy);
 
     // two-level local search: (velocity step, velocity half-range, position step, position half-range)
     const double levels[2][4] = {{dv / 4, dv, 0.5, 1.0}, {dv / 8, dv / 4, 0.25, 0.5}};
@@ -228,20 +265,33 @@ Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, doub
                     for (int j = -nps; j <= nps; ++j) {
                         const double vx = cvx + a * L[0], vy = cvy + b * L[0];
                         const double x = cx + i * L[2], y = cy + j * L[2];
-                        const double s = track_snr(p, x, y, vx, vy, 0).snr;
+                        const double s = S(x, y, vx, vy);
                         if (s > best) {
                             best = s;
                             bx = x; by = y; bvx = vx; bvy = vy;
                         }
                     }
+        if (dq > 0.0) {
+            // near-Earth: the inverse distance, in steps of dq/4 then dq/8 (never negative)
+            const double step = dq * L[0] / dv, cq = bq;
+            for (int k = -2; k <= 2; ++k) {
+                const double qq = cq + k * step;
+                if (k == 0 || qq < 0.0) continue;
+                const double s = track_snr(p, bx, by, bvx, bvy, 0, nullptr, qq).snr;
+                if (s > best) {
+                    best = s;
+                    bq = qq;
+                }
+            }
+        }
     }
     // sub-pixel position from a parabola through three samples per axis
     {
         const double h = 0.25;
-        const double sx0 = track_snr(p, bx - h, by, bvx, bvy, 0).snr;
-        const double sx2 = track_snr(p, bx + h, by, bvx, bvy, 0).snr;
-        const double sy0 = track_snr(p, bx, by - h, bvx, bvy, 0).snr;
-        const double sy2 = track_snr(p, bx, by + h, bvx, bvy, 0).snr;
+        const double sx0 = S(bx - h, by, bvx, bvy);
+        const double sx2 = S(bx + h, by, bvx, bvy);
+        const double sy0 = S(bx, by - h, bvx, bvy);
+        const double sy2 = S(bx, by + h, bvx, bvy);
         const double denx = sx0 - 2 * best + sx2, deny = sy0 - 2 * best + sy2;
         if (denx < 0) bx += std::clamp(0.5 * h * (sx0 - sx2) / denx, -h, h);
         if (deny < 0) by += std::clamp(0.5 * h * (sy0 - sy2) / deny, -h, h);
@@ -250,16 +300,26 @@ Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, doub
     // sub-step motion from a parabola as well
     {
         const double h = dv / 8;
-        const double s0 = track_snr(p, bx, by, bvx - h, bvy, 0).snr, s2 = track_snr(p, bx, by, bvx + h, bvy, 0).snr;
-        const double t0 = track_snr(p, bx, by, bvx, bvy - h, 0).snr, t2 = track_snr(p, bx, by, bvx, bvy + h, 0).snr;
-        const double sc = track_snr(p, bx, by, bvx, bvy, 0).snr;
+        const double s0 = S(bx, by, bvx - h, bvy), s2 = S(bx, by, bvx + h, bvy);
+        const double t0 = S(bx, by, bvx, bvy - h), t2 = S(bx, by, bvx, bvy + h);
+        const double sc = S(bx, by, bvx, bvy);
         const double denx = s0 - 2 * sc + s2, deny = t0 - 2 * sc + t2;
         if (denx < 0) bvx += std::clamp(0.5 * h * (s0 - s2) / denx, -h, h);
         if (deny < 0) bvy += std::clamp(0.5 * h * (t0 - t2) / deny, -h, h);
     }
+    if (dq > 0.0) {
+        // and the inverse distance
+        const double h = dq / 8;
+        const double sc = S(bx, by, bvx, bvy);
+        const double s0 = track_snr(p, bx, by, bvx, bvy, 0, nullptr, std::max(0.0, bq - h)).snr;
+        const double s2 = track_snr(p, bx, by, bvx, bvy, 0, nullptr, bq + h).snr;
+        const double den = s0 - 2 * sc + s2;
+        if (den < 0 && bq - h >= 0.0) bq = std::max(0.0, bq + std::clamp(0.5 * h * (s0 - s2) / den, -h, h));
+    }
 
     std::vector<double> per_frame;
-    const TrackEval all = track_snr(p, bx, by, bvx, bvy, 0, &per_frame);
+    const TrackEval all = track_snr(p, bx, by, bvx, bvy, 0, &per_frame, bq);
+    c.inv_dist_au = bq;
     c.x = bx;
     c.y = by;
     c.vx_pxh = bvx;
@@ -277,9 +337,18 @@ Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, doub
         for (double t : p.t_h) t2 += t * t;
         t2 /= std::max(1, p.nframes);
         c.vel_err_pxh = t2 > 0.0 ? c.pos_err_px / std::sqrt(t2) : 0.0;
+        if (dq > 0.0) {
+            // likewise for the inverse distance: the parallax curve takes the place of t
+            double p2 = 0.0;
+            for (int i = 0; i < p.nframes; ++i)
+                p2 += 0.5 * (p.par_x[static_cast<std::size_t>(i)] * p.par_x[static_cast<std::size_t>(i)] +
+                             p.par_y[static_cast<std::size_t>(i)] * p.par_y[static_cast<std::size_t>(i)]);
+            p2 /= std::max(1, p.nframes);
+            c.inv_dist_err_au = p2 > 0.0 ? c.pos_err_px / std::sqrt(p2) : 0.0;
+        }
     }
-    c.snr_half1 = track_snr(p, bx, by, bvx, bvy, 1).snr;
-    c.snr_half2 = track_snr(p, bx, by, bvx, bvy, 2).snr;
+    c.snr_half1 = S(bx, by, bvx, bvy, 1);
+    c.snr_half2 = S(bx, by, bvx, bvy, 2);
 
     double pos_sum = 0.0, maxc = 0.0;
     int masked = 0, inside = 0;
@@ -289,15 +358,16 @@ Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, doub
         ++inside;
         pos_sum += std::max(0.0, v);
         maxc = std::max(maxc, v);
-        const double t = p.t_h[static_cast<std::size_t>(i)];
-        const int xi = static_cast<int>(std::lround(bx + bvx * t)), yi = static_cast<int>(std::lround(by + bvy * t));
+        double px, py;
+        track_pos(p, i, bx, by, bvx, bvy, bq, px, py);
+        const int xi = static_cast<int>(std::lround(px)), yi = static_cast<int>(std::lround(py));
         if (p.mask.inside(xi, yi) && p.mask.at(xi, yi) == 0.0f) ++masked;
     }
     c.max_frame_fraction = pos_sum > 0.0 ? maxc / pos_sum : 1.0;
 
     // PSF photometry on the stacked residuals
     const double s = p.fwhm_px * kFwhmToSigma;
-    const Image cut = stack_cutout(p, bx, by, bvx, bvy, static_cast<int>(std::ceil(3.0 * s)), false, 0);
+    const Image cut = stack_cutout(p, bx, by, bvx, bvy, static_cast<int>(std::ceil(3.0 * s)), false, 0, bq);
     double num = 0.0, den = 0.0;
     const int R = cut.width / 2;
     for (int y = 0; y < cut.height; ++y)
@@ -318,8 +388,8 @@ Candidate refine(const Prepared& p, const Peak& pk, const std::pair<double, doub
     if (c.snr_half1 < half_min || c.snr_half2 < half_min) flags.push_back("half");
     if (p.nframes >= 8 && c.max_frame_fraction > params.max_frame_fraction) flags.push_back("single");
     if (inside > 0 && masked > inside / 2) flags.push_back("masked");
-    if (edge_flag(p, bx, by, bvx, bvy)) flags.push_back("edge");
-    if (detector_flag(p, bx, by, bvx, bvy, all.snr)) flags.push_back("detector");
+    if (edge_flag(p, bx, by, bvx, bvy, bq)) flags.push_back("edge");
+    if (detector_flag(p, bx, by, bvx, bvy, all.snr, bq)) flags.push_back("detector");
     if (std::hypot(bvx, bvy) > params.vmax_pxh - 0.5 * dv) flags.push_back("vedge");
     if (std::hypot(bvx, bvy) < 2.0 * p.fwhm_px / p.span_h) flags.push_back("slow");
     for (std::size_t i = 0; i < flags.size(); ++i) c.flags += (i ? "," : "") + flags[i];
@@ -347,12 +417,34 @@ void add_flag(Candidate& c, const std::string& f) {
     c.flags += c.flags.empty() ? f : "," + f;
 }
 
+void parallax_at(const Prepared& p, double t, double& px, double& py) {
+    px = py = 0.0;
+    const int n = static_cast<int>(p.par_x.size());
+    if (n == 0 || n != p.nframes) return;
+    // frames sorted by time
+    std::vector<int> idx(static_cast<std::size_t>(n));
+    std::iota(idx.begin(), idx.end(), 0);
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) { return p.t_h[static_cast<std::size_t>(a)] < p.t_h[static_cast<std::size_t>(b)]; });
+    auto T = [&](int k) { return p.t_h[static_cast<std::size_t>(idx[static_cast<std::size_t>(k)])]; };
+    int k = 0;
+    while (k < n - 2 && T(k + 1) < t) ++k;
+    const int i0 = idx[static_cast<std::size_t>(k)], i1 = idx[static_cast<std::size_t>(std::min(k + 1, n - 1))];
+    const double t0 = T(k), t1 = T(std::min(k + 1, n - 1));
+    const double f = t1 > t0 ? (t - t0) / (t1 - t0) : 0.0;  // extrapolates linearly outside
+    px = p.par_x[static_cast<std::size_t>(i0)] + f * (p.par_x[static_cast<std::size_t>(i1)] - p.par_x[static_cast<std::size_t>(i0)]);
+    py = p.par_y[static_cast<std::size_t>(i0)] + f * (p.par_y[static_cast<std::size_t>(i1)] - p.par_y[static_cast<std::size_t>(i0)]);
+}
+
 void sky_coordinates(const Prepared& p, Candidate& c) {
     if (!p.wcs.valid) return;
     double ra, dec, ra2, dec2;
-    p.wcs.pix2sky(c.x, c.y, ra, dec);
     const double dt = 0.1;  // hours
-    p.wcs.pix2sky(c.x + c.vx_pxh * dt, c.y + c.vy_pxh * dt, ra2, dec2);
+    // for near-Earth candidates: the curved track as observed (topocentric)
+    double x0, y0, x1, y1;
+    candidate_position_at(p, c, 0.0, x0, y0);
+    candidate_position_at(p, c, dt, x1, y1);
+    p.wcs.pix2sky(x0, y0, ra, dec);
+    p.wcs.pix2sky(x1, y1, ra2, dec2);
     c.ra_deg = ra;
     c.dec_deg = dec;
     const double d2r = kPi / 180.0;
@@ -548,9 +640,10 @@ void finish_candidates(const Prepared& meta, std::vector<RefinedCandidate> rc, S
             if (drop[i]) continue;
             int overlap = 0;
             for (int f = 0; f < p.nframes; ++f) {
-                const double t = p.t_h[static_cast<std::size_t>(f)];
-                const double dx = (rc[i].c.x + rc[i].c.vx_pxh * t) - (rc[j].c.x + rc[j].c.vx_pxh * t);
-                const double dy = (rc[i].c.y + rc[i].c.vy_pxh * t) - (rc[j].c.y + rc[j].c.vy_pxh * t);
+                double xi, yi, xj, yj;
+                track_pos(p, f, rc[i].c.x, rc[i].c.y, rc[i].c.vx_pxh, rc[i].c.vy_pxh, rc[i].c.inv_dist_au, xi, yi);
+                track_pos(p, f, rc[j].c.x, rc[j].c.y, rc[j].c.vx_pxh, rc[j].c.vy_pxh, rc[j].c.inv_dist_au, xj, yj);
+                const double dx = xi - xj, dy = yi - yj;
                 if (dx * dx + dy * dy < r_overlap * r_overlap) {
                     ++overlap;
                     shared[static_cast<std::size_t>(f)] = true;
@@ -605,10 +698,10 @@ int null_tested_count(const SearchParams& params, std::size_t npeaks) {
 }
 
 RefinedCandidate refine_with_contrib(const Prepared& p, const Peak& pk, const std::pair<double, double>& v0, double dv,
-                                     const SearchParams& params) {
+                                     const SearchParams& params, double q0, double dq) {
     RefinedCandidate r;
-    r.c = refine(p, pk, v0, dv, params);
-    track_snr(p, r.c.x, r.c.y, r.c.vx_pxh, r.c.vy_pxh, 0, &r.contrib);
+    r.c = refine(p, pk, v0, dv, params, q0, dq);
+    track_snr(p, r.c.x, r.c.y, r.c.vx_pxh, r.c.vy_pxh, 0, &r.contrib, r.c.inv_dist_au);
     return r;
 }
 
@@ -630,6 +723,14 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     double dv = 0.0;
     const auto grid = velocity_grid(p, params, &dv);
     res.n_velocities = grid.size();
+    double dq = 0.0;
+    const std::vector<double> Q = inverse_distance_grid(p, params, &dq);
+    res.n_distances = Q.size();
+    res.dq_inv_au = dq;
+    const std::size_t nv = grid.size(), n_motions = nv * Q.size();
+    if (n_motions > 5000000) throw std::runtime_error("near-Earth search too large; narrow the velocity range or raise --neo");
+    auto vel = [&](int j) -> const std::pair<double, double>& { return grid[static_cast<std::size_t>(j) % nv]; };
+    auto qof = [&](int j) { return Q[static_cast<std::size_t>(j) / nv]; };
     const std::unique_ptr<SearchBackend> backend = make_backend(params.backend);
     res.backend = backend->name();
     res.backend_description = backend->description();
@@ -645,7 +746,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     const int edge = std::max(params.edge_px, 1);
 
     // the real search
-    PassOutput real = run_pass(*backend, p, grid, p.t_h, params, progress, 0.0, share, "search");
+    PassOutput real = run_pass(*backend, p, grid, p.t_h, params, progress, 0.0, share, "search", &Q);
     sw.lap("stack (real)");
     for (const auto& st : real.timings) res.timings.push_back({"  " + st.name, st.seconds});
     const float floor = static_cast<float>(auto_thr ? params.min_snr_floor : params.threshold_snr);
@@ -664,7 +765,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
         detail::release_free_memory();
         const Prepared q = detail::with_times(p, t, params);
         sw.lap("null rebuild");
-        PassOutput null = run_pass(*backend, q, grid, t, params, progress, share * (k + 1), share * (k + 2), stage);
+        PassOutput null = run_pass(*backend, q, grid, t, params, progress, share * (k + 1), share * (k + 2), stage, &Q);
         sw.lap("stack (null)");
         for (const auto& st : null.timings) res.timings.push_back({"  " + st.name, st.seconds});
         const std::vector<Peak> npk = find_peaks(null, 3.0f, nms, edge, 20000);
@@ -673,14 +774,14 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
 #pragma omp parallel for num_threads(nt) schedule(dynamic)
         for (int j = 0; j < static_cast<int>(art.size()); ++j) {
             const Peak& pk = npk[static_cast<std::size_t>(j)];
-            art[static_cast<std::size_t>(j)] = is_artefact_peak(q, pk, grid[static_cast<std::size_t>(pk.vidx)], params);
+            art[static_cast<std::size_t>(j)] = is_artefact_peak(q, pk, vel(pk.vidx), params, qof(pk.vidx));
         }
         pool_null_peaks(npk, art, pooled);
         sw.lap("peaks (null)");
         // the null run's frames are released when q goes out of scope
     }
     detail::release_free_memory();
-    set_threshold(p, params, grid.size(), runs, pooled, res);
+    set_threshold(p, params, n_motions, runs, pooled, res);
     sw.lap("threshold fit");
 
     // refine in parallel
@@ -692,7 +793,7 @@ SearchResult search(const Prepared& p, const SearchParams& params, const Progres
     for (int k = 0; k < static_cast<int>(keep.size()); ++k) {
         if (cancel) continue;
         const Peak& pk = keep[static_cast<std::size_t>(k)];
-        rc[static_cast<std::size_t>(k)] = refine_with_contrib(p, pk, grid[static_cast<std::size_t>(pk.vidx)], dv, params);
+        rc[static_cast<std::size_t>(k)] = refine_with_contrib(p, pk, vel(pk.vidx), dv, params, qof(pk.vidx), dq);
         const int d = ++done;
         if (detail::thread_id() == 0 && progress && !progress(0.9 + 0.1 * d / keep.size(), "refine"))
             cancel = true;
@@ -723,7 +824,7 @@ static void require_residuals(const Prepared& p) {
 }
 
 Image stack_cutout(const Prepared& p, double x, double y, double vx, double vy, int half_size,
-                   bool snr, int which) {
+                   bool snr, int which, double inv_dist_au) {
     const int size = 2 * half_size + 1;
     Image out(size, size, 0.0f);
     std::vector<int> count(static_cast<std::size_t>(size) * size, 0);
@@ -731,7 +832,8 @@ Image stack_cutout(const Prepared& p, double x, double y, double vx, double vy, 
         const double t = p.t_h[static_cast<std::size_t>(i)];
         if (which == 1 && t >= 0.0) continue;
         if (which == 2 && t < 0.0) continue;
-        const double cx = x + vx * t, cy = y + vy * t;
+        double cx, cy;
+        detail::track_pos(p, i, x, y, vx, vy, inv_dist_au, cx, cy);
         // residuals: the small area the bilinear samples touch, copied or recomputed
         const int px0 = static_cast<int>(std::floor(cx - half_size)) - 1, py0 = static_cast<int>(std::floor(cy - half_size)) - 1;
         Image patch;
@@ -773,6 +875,21 @@ Image stack_full(const Prepared& p, double vx, double vy) {
     return out;
 }
 
+void candidate_position(const Prepared& p, const Candidate& c, int frame, double& x, double& y) {
+    detail::track_pos(p, frame, c.x, c.y, c.vx_pxh, c.vy_pxh, c.inv_dist_au, x, y);
+}
+
+void candidate_position_at(const Prepared& p, const Candidate& c, double t_h, double& x, double& y) {
+    x = c.x + c.vx_pxh * t_h;
+    y = c.y + c.vy_pxh * t_h;
+    if (c.inv_dist_au != 0.0) {
+        double px, py;
+        detail::parallax_at(p, t_h, px, py);
+        x += c.inv_dist_au * px;
+        y += c.inv_dist_au * py;
+    }
+}
+
 std::vector<TrackPoint> track_points(const Prepared& p, const Candidate& c) {
     std::vector<TrackPoint> pts;
     for (int i = 0; i < p.nframes; ++i) {
@@ -780,8 +897,7 @@ std::vector<TrackPoint> track_points(const Prepared& p, const Candidate& c) {
         tp.frame = i;
         const double t = p.t_h[static_cast<std::size_t>(i)];
         tp.mjd = p.t_ref_mjd + t / 24.0;
-        tp.x = c.x + c.vx_pxh * t;
-        tp.y = c.y + c.vy_pxh * t;
+        detail::track_pos(p, i, c.x, c.y, c.vx_pxh, c.vy_pxh, c.inv_dist_au, tp.x, tp.y);
         if (p.wcs.valid) p.wcs.pix2sky(tp.x, tp.y, tp.ra_deg, tp.dec_deg);
         pts.push_back(tp);
     }

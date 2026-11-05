@@ -144,6 +144,8 @@ private:
     QDoubleSpinBox* m_threshold = nullptr;
     QSpinBox* m_threads = nullptr;
     QComboBox* m_backend = nullptr;
+    QDoubleSpinBox* m_neo = nullptr;     // closest distance of the near-Earth search (AU), 0 = off
+    class QLineEdit* m_site = nullptr;   // observer's site "lat,lon[,h]" for it
     QPushButton* m_searchButton = nullptr;
     QPushButton* m_cancelButton = nullptr;
 

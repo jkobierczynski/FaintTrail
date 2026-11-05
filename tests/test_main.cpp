@@ -956,6 +956,131 @@ static void test_photometry() {
 
 // 16-bit fixture files and cropping: quantisation well below the noise, NaN kept,
 // WCS and registration offsets consistent after the crop.
+// Near-Earth object: a curved track from the diurnal parallax. The ordinary
+// search loses most of the signal; the inverse-distance search recovers the
+// distance and the S/N, and with the near-Earth search off nothing changes.
+static void test_neo_curved_track() {
+    SimParams s = small_sim(21);
+    s.nframes = 72;
+    s.cadence_s = 100;  // 2 hours
+    s.exptime_s = 60;
+    ObserverSite site;
+    site.valid = true;
+    site.lat_deg = s.site_lat_deg;
+    site.lon_deg = s.site_lon_deg;
+    site.height_m = s.site_height_m;
+
+    // geocentric motion chosen so that the apparent mean motion is (18, -9) px/h
+    const double q_true = 1.0 / 0.005;  // 0.005 AU, about 2 lunar distances
+    const Wcs wcs = Wcs::make_tan(s.ra_deg, s.dec_deg, 0.5 * s.width + 0.5, 0.5 * s.height + 0.5, s.pixscale_arcsec, 0.0);
+    std::vector<double> mjd, t;
+    double t_ref = 0.0;
+    for (int i = 0; i < s.nframes; ++i) mjd.push_back(s.mjd_start + (i * s.cadence_s + 0.5 * s.exptime_s) / 86400.0);
+    t_ref = 0.5 * (mjd.front() + mjd.back());
+    for (double m : mjd) t.push_back((m - t_ref) * 24.0);
+    std::vector<double> px, py;
+    parallax_pixels(wcs, 96, 96, site, mjd, px, py);
+    auto slope = [&](const std::vector<double>& v) {
+        double st = 0, sv = 0, stt = 0, stv = 0;
+        for (std::size_t i = 0; i < t.size(); ++i) { st += t[i]; sv += v[i]; stt += t[i] * t[i]; stv += t[i] * v[i]; }
+        const double n = static_cast<double>(t.size());
+        return (n * stv - st * sv) / (n * stt - st * st);
+    };
+    SimMover m;
+    m.id = "NEO";
+    m.x_ref = 96;
+    m.y_ref = 96;
+    m.vx_pxh = 18.0 - q_true * slope(px);
+    m.vy_pxh = -9.0 - q_true * slope(py);
+    m.mag = 19.6;
+    m.inv_dist_au = q_true;
+    const SimResult sim = simulate(s, {m});
+
+    SearchParams sp = quick_search();
+    Prepared prep = prepare(sim.frames, sp);
+    set_parallax_model(prep, site);
+    const double amp = parallax_amplitude_px(prep);
+    CHECK(amp > 0.01 && amp < 0.5);  // curvature at 1 AU after removing the straight line
+    std::printf("    parallax curvature %.3f px at 1 AU, %.1f px at the object\n", amp, amp * q_true);
+
+    auto find = [&](const SearchResult& r) -> const Candidate* {
+        const Candidate* best = nullptr;
+        for (const auto& c : r.candidates) {
+            double x, y;
+            candidate_position_at(prep, c, 0.0, x, y);
+            double x0 = m.x_ref, y0 = m.y_ref;
+            if (std::hypot(x - x0, y - y0) < 6.0 && (!best || c.snr > best->snr)) best = &c;
+        }
+        return best;
+    };
+    const SearchResult straight = search(prep, sp);
+    CHECK(straight.n_distances == 1);
+    SearchParams np = sp;
+    np.neo_min_dist_au = 0.004;
+    const SearchResult neo = search(prep, np);
+    CHECK(neo.n_distances > 1);
+    CHECK(neo.n_velocities == straight.n_velocities);
+    const Candidate* cn = find(neo);
+    CHECK(cn != nullptr);
+    if (!cn) return;
+    const Candidate* cs = find(straight);
+    std::printf("    straight: %s S/N %.2f; near-Earth: S/N %.2f, distance %.4f AU (true %.4f), 1/D %.1f +- %.1f, %zu distances\n",
+                cs ? (cs->ok ? "found" : "flagged") : "missed", cs ? cs->snr : 0.0, cn->snr,
+                cn->inv_dist_au > 0 ? 1.0 / cn->inv_dist_au : 0.0, 1.0 / q_true, cn->inv_dist_au, cn->inv_dist_err_au, neo.n_distances);
+    CHECK(cn->ok);
+    CHECK(!cs || cn->snr > 1.3 * cs->snr);
+    int nok = 0;
+    for (const auto& c : neo.candidates) nok += c.ok;
+    std::printf("    thresholds: straight %.2f, near-Earth %.2f; %d passing\n", straight.threshold_snr, neo.threshold_snr, nok);
+    CHECK(nok == 1);  // no false positives from the extra dimension
+    CHECK_NEAR(cn->inv_dist_au, q_true, 0.15 * q_true);
+    CHECK(cn->distance_measured());
+    CHECK(std::fabs(cn->inv_dist_au - q_true) < 4.0 * cn->inv_dist_err_au);
+    // the track follows the truth in every frame
+    double worst = 0.0;
+    std::vector<double> tmjd = mjd;
+    tmjd.push_back(t_ref);
+    std::vector<double> tx, ty;
+    parallax_pixels(wcs, m.x_ref, m.y_ref, site, tmjd, tx, ty);
+    for (int i = 0; i < s.nframes; ++i) {
+        const double ti = t[static_cast<std::size_t>(i)];
+        const double xt = m.x_ref + m.vx_pxh * ti + q_true * (tx[static_cast<std::size_t>(i)] - tx.back());
+        const double yt = m.y_ref + m.vy_pxh * ti + q_true * (ty[static_cast<std::size_t>(i)] - ty.back());
+        double x, y;
+        candidate_position(prep, *cn, i, x, y);
+        worst = std::max(worst, std::hypot(x - xt, y - yt));
+    }
+    std::printf("    largest track error %.2f px\n", worst);
+    CHECK(worst < 1.0);
+    // without the parallax model the near-Earth search refuses to run
+    Prepared bare = prepare(sim.frames, sp);
+    bool threw = false;
+    try {
+        search(bare, np);
+    } catch (const std::exception&) {
+        threw = true;
+    }
+    CHECK(threw);
+    // and with it switched off, results are those of the straight search, bit for bit
+    const SearchResult off = search(prep, sp);
+    CHECK(off.candidates.size() == straight.candidates.size());
+    for (std::size_t k = 0; k < off.candidates.size() && k < straight.candidates.size(); ++k) {
+        CHECK(off.candidates[k].x == straight.candidates[k].x);
+        CHECK(off.candidates[k].snr == straight.candidates[k].snr);
+        CHECK(off.candidates[k].inv_dist_au == 0.0);
+    }
+    // site keywords
+    FitsHeader h;
+    h.set("SITELAT", "+50 55 48");
+    h.set("SITELONG", "5.39");
+    ObserverSite hs;
+    CHECK(site_from_header(h, hs));
+    CHECK_NEAR(hs.lat_deg, 50.93, 1e-9);
+    const ObserverSite ps = parse_site("-33.5,210,1000");
+    CHECK_NEAR(ps.lon_deg, -150.0, 1e-12);
+    CHECK_NEAR(ps.height_m, 1000.0, 1e-12);
+}
+
 static void test_crop_and_int16() {
     detail_rng_seed(5);
     Frame f;
@@ -1177,6 +1302,7 @@ int main() {
         {"aligned search of a drifting sequence", test_aligned_search},
         {"sky positions and plate solving", test_sky_positions},
         {"photometric calibration", test_photometry},
+        {"near-Earth curved track", test_neo_curved_track},
         {"crop and 16-bit FITS", test_crop_and_int16},
         {"regression case files", test_regression_case},
         {"memory layout", test_memory_layout},

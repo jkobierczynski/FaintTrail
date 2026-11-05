@@ -274,6 +274,9 @@ SearchResult search_tiled(const FrameSource& src, const SearchParams& params_in,
     using namespace detail;
     SearchParams params = params_in;
     params.keep_residuals = false;  // tiles never need them
+    if (params.neo_min_dist_au > 0.0)
+        throw std::runtime_error("the near-Earth search (curved tracks) is not available in the tiled search; "
+                                 "search without tiles");
     const auto t_start = std::chrono::steady_clock::now();
     Prepared meta = make_meta(src);
     const int n = meta.nframes, W = meta.width, H = meta.height;

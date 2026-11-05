@@ -221,6 +221,45 @@ exposure measured 18.88 against a true 18.90. Not yet run on real data (VizieR i
 not reachable from the development machine); first check: (4456) Mawson against
 its predicted V 19.5.
 
+### D46. Near-Earth search: one extra dimension, the inverse distance (after 0.9.1)
+**Decision.** Curved tracks are searched as `x + v·t + q·P(t)`, where `P(t)` is the
+diurnal parallax displacement (pixels) of an object at 1 AU in the field centre,
+seen from the observer's site, with its least-squares straight line removed, and
+`q = 1/Δ` (AU⁻¹) is the one extra search dimension. The model follows from the
+site (WGS84), the frame times (GMST) and the plate solution (CD matrix); the site
+comes from `--site LAT,LON[,H]` (GUI: *Site*) or the FITS keywords
+SITELAT/SITELONG, OBSGEO-B/L/H or LAT-OBS/LONG-OBS. The grid `q = 0, dq, 2dq, …,
+1/Δ_min` has `dq = 2·grid_tol / max|P|`, so neighbouring trials differ by at most
+twice the grid tolerance in any frame, as for the velocity grid; at most
+`neo_max_trials` (64) values. Every (q, v) pair goes through the backend as an
+explicit shift table `round(v·t + q·P)` (D38); refinement adds two levels of q
+steps and a parabola, never below 0. The null runs permute P with the times.
+The candidate keeps `inv_dist_au` and `inv_dist_err_au` (from the position error
+and the RMS of P, as for the velocity error); a distance is reported only when
+q > 3σ. Positions, RA/Dec, tracklets and MPC lines follow the curved track.
+With `neo_min_dist_au = 0` (default) the code path is the straight search and the
+results are bit-identical to 0.9.1.
+**Why.** Over hours, the curvature of a close object is dominated by the observer
+moving with the Earth's rotation, and that motion is known exactly: the curve's
+shape depends only on site, time and field, its size only on 1/Δ. One dimension
+therefore covers every curvature diurnal parallax can produce, at a cost of
+(number of q trials) × the straight search, instead of two free acceleration
+terms with a much larger grid and more trials to calibrate. Removing the straight
+line from P keeps (x, v) the mean position and motion, and makes q nearly
+orthogonal to them, so the refinement can take q separately. The geocentric
+orbit's own curvature is not modelled (much smaller than the parallax over a few
+hours for objects near the Earth); the linearised parallax is accurate to about
+R⊕/Δ (0.6 % at 0.005 AU, about 0.1 px of curvature on the test case), so the
+model is meant for Δ ≳ 0.002 AU.
+**Tested.** Simulation, 2 h at latitude 51°, object at 0.005 AU (5.4 px of
+curvature after the straight line): straight search S/N 12.0 (flagged), near-Earth
+search S/N 19.7, distance 0.0050 AU (1/Δ = 200 ± 15 against 200), track within
+0.3 px of the truth in every frame, no extra false positives, same calibrated
+threshold. An exact topocentric computation agrees with the model to 0.6 % of the
+displacement. Not yet run on a real near-Earth object.
+**Limits.** Untiled searches only (the tiled search refuses); needs a plate
+solution before the search.
+
 ---
 
 ## 4. Algorithm
@@ -544,7 +583,8 @@ development machine's CPU).
 ## 10. Other open items
 
 * SIP/PV distortion in transferred plate solutions.
-* Curved motion (see section 9).
+* Near-Earth search (D46): a real close approach as a regression case; tiled
+  near-Earth searches; the C API.
 * Slow movers in short sequences lose signal to the static sky.
 * The 1.25 astrometric factor needs independent confirmation.
 * Faster leave-out median (O(n log n)).
@@ -573,3 +613,4 @@ development machine's CPU).
 | 0.8.2 | explicit shift tables in the backend contract |
 | 0.9.0 | CUDA backend (verified bit-identical); built-in frame alignment; ASTAP plate solving, RA/Dec and MPC output |
 | 0.9.1 | PSF width estimate independent of the C++ standard library (NaN borders; fixes the full-frame cases on Windows); no fused multiply-adds with Clang (`-ffp-contract=off`; tiled = untiled on Apple silicon); regression report shows the registration check; full regression cases verified on the RTX 5080 |
+| next (unreleased) | near-Earth search: curved tracks from the diurnal parallax, one extra dimension (1/Δ) (D46) |

@@ -7,6 +7,7 @@
 
 #include "fainttrail/astrometry.hpp"
 #include "fainttrail/registration.hpp"
+#include "fainttrail/parallax.hpp"
 #include "fainttrail/photometry.hpp"
 #include "fainttrail/regression.hpp"
 #include "fainttrail/tiled.hpp"

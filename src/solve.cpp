@@ -19,6 +19,7 @@
 #include <thread>
 
 #include "common.hpp"
+#include "internal.hpp"
 #include "process.hpp"
 
 
@@ -304,22 +305,7 @@ SolveResult solve_with_astap(const Image& image, const SolveHints& hints, const 
 void update_sky_coordinates(const Prepared& p, SearchResult& res) {
     if (!p.wcs.valid) return;
     res.has_sky = true;
-    for (auto& c : res.candidates) {
-        double ra, dec, ra2, dec2;
-        p.wcs.pix2sky(c.x, c.y, ra, dec);
-        const double dt = 0.1;
-        p.wcs.pix2sky(c.x + c.vx_pxh * dt, c.y + c.vy_pxh * dt, ra2, dec2);
-        c.ra_deg = ra;
-        c.dec_deg = dec;
-        double dra = ra2 - ra;
-        if (dra > 180.0) dra -= 360.0;
-        if (dra < -180.0) dra += 360.0;
-        const double east = dra * std::cos(dec * kDeg) * 3600.0, north = (dec2 - dec) * 3600.0;
-        c.rate_arcsec_min = std::hypot(east, north) / (dt * 60.0);
-        double pa = std::atan2(east, north) / kDeg;
-        if (pa < 0) pa += 360.0;
-        c.pa_deg = pa;
-    }
+    for (auto& c : res.candidates) detail::sky_coordinates(p, c);
 }
 
 SolveResult solve_prepared(Prepared& p, const SolveHints& hints, const SolveOptions& options) {
@@ -348,8 +334,9 @@ std::vector<std::string> mpc_observations(const Prepared& p, const SearchResult&
         char desig[16];
         std::snprintf(desig, sizeof desig, "FT%05d", c.id % 100000);
         for (const double th : when) {
-            double ra, dec;
-            if (!p.wcs.pix2sky(c.x + c.vx_pxh * th, c.y + c.vy_pxh * th, ra, dec)) continue;
+            double ra, dec, x, y;
+            candidate_position_at(p, c, th, x, y);
+            if (!p.wcs.pix2sky(x, y, ra, dec)) continue;
             // date: UTC, fraction of the day to 5 decimals (0.9 s)
             const double mjd = p.t_ref_mjd + th / 24.0;
             const std::string iso = iso_from_mjd(mjd, 3);  // "YYYY-MM-DDThh:mm:ss.sss"

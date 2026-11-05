@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright 2026 Jurgen Kobierczynski
 #include "fainttrail/simulate.hpp"
+#include "fainttrail/parallax.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -102,6 +103,30 @@ SimResult simulate(const SimParams& p, const std::vector<SimMover>& movers_in) {
     const Wcs wcs = Wcs::make_tan(p.ra_deg, p.dec_deg, 0.5 * w + 0.5, 0.5 * h + 0.5,
                                   p.pixscale_arcsec, 0.0);
 
+    // near-Earth movers: parallax displacement (1 AU, pixels) at the start of each
+    // exposure [0, n), the reference epoch [n] and the end of each exposure [n+1, 2n+1)
+    std::vector<std::vector<double>> parallax(out.truth.size());
+    for (std::size_t k = 0; k < out.truth.size(); ++k) {
+        const auto& m = out.truth[k].mover;
+        if (m.inv_dist_au <= 0.0) continue;
+        ObserverSite site;
+        site.valid = true;
+        site.lat_deg = p.site_lat_deg;
+        site.lon_deg = p.site_lon_deg;
+        site.height_m = p.site_height_m;
+        std::vector<double> mjd;
+        const double half = 0.5 * p.exptime_s / 86400.0;
+        for (int i = 0; i < n; ++i) mjd.push_back(mid[static_cast<std::size_t>(i)] - half);
+        mjd.push_back(out.t_ref_mjd);
+        for (int i = 0; i < n; ++i) mjd.push_back(mid[static_cast<std::size_t>(i)] + half);
+        std::vector<double> px, py;
+        parallax_pixels(wcs, m.x_ref, m.y_ref, site, mjd, px, py);
+        for (std::size_t j = 0; j < mjd.size(); ++j) {
+            parallax[k].push_back(px[j]);
+            parallax[k].push_back(py[j]);
+        }
+    }
+
     out.frames.reserve(static_cast<std::size_t>(n));
     for (int i = 0; i < n; ++i) {
         const double fwhm = std::max(0.6 * p.fwhm_px, p.fwhm_px * (1.0 + p.fwhm_jitter * rng.normal()));
@@ -115,11 +140,19 @@ SimResult simulate(const SimParams& p, const std::vector<SimMover>& movers_in) {
 
         const double t_start_h = (mid[static_cast<std::size_t>(i)] - out.t_ref_mjd) * 24.0 - 0.5 * p.exptime_s / 3600.0;
         const double t_end_h = t_start_h + p.exptime_s / 3600.0;
-        for (const auto& t : out.truth) {
+        for (std::size_t k = 0; k < out.truth.size(); ++k) {
+            const auto& t = out.truth[k];
             const auto& m = t.mover;
-            detail::add_trailed(e, m.x_ref + m.vx_pxh * t_start_h, m.y_ref + m.vy_pxh * t_start_h,
-                                m.x_ref + m.vx_pxh * t_end_h, m.y_ref + m.vy_pxh * t_end_h,
-                                t.flux_e * transp, sigma);
+            double x0 = m.x_ref + m.vx_pxh * t_start_h, y0 = m.y_ref + m.vy_pxh * t_start_h;
+            double x1 = m.x_ref + m.vx_pxh * t_end_h, y1 = m.y_ref + m.vy_pxh * t_end_h;
+            if (m.inv_dist_au > 0.0) {
+                const auto& d = parallax[k];  // start, end, reference epoch
+                x0 += m.inv_dist_au * (d[2 * i] - d[2 * n]);
+                y0 += m.inv_dist_au * (d[2 * i + 1] - d[2 * n + 1]);
+                x1 += m.inv_dist_au * (d[2 * (n + 1 + i)] - d[2 * n]);
+                y1 += m.inv_dist_au * (d[2 * (n + 1 + i) + 1] - d[2 * n + 1]);
+            }
+            detail::add_trailed(e, x0, y0, x1, y1, t.flux_e * transp, sigma);
         }
 
         Frame f;

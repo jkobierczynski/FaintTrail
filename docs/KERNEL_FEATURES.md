@@ -89,8 +89,9 @@ objects), along an ephemeris (known objects), or with parallax-corrected motions
 **Implemented in 0.8.2:** `StackPass::shifts` takes an optional `ShiftTable`;
 `linear_shift_table()` builds the default `round(v·t)` table. The last column above
 shows the kernel recovering the full S/N of curved tracks when it is given their
-curvature. A curvature *search* (two more grid dimensions) is not planned now; it
-belongs to a later near-Earth mode.
+curvature. A free curvature *search* (two more grid dimensions) was not pursued;
+the near-Earth search added later uses the shift table with one extra dimension,
+the inverse distance of a diurnal-parallax model (DEVELOPMENT.md D46).
 
 ## 3. Per-frame weights
 

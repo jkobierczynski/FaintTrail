@@ -156,6 +156,16 @@ a saved extract with `--catalog FILE`; `--photometry off` skips it. The MPC line
 then carry magnitude and band. Check every object before submitting anything to
 the Minor Planet Center.
 
+**Near-Earth objects.** `--neo 0.002 --site 50.93,5.39,40` (GUI: *Near-Earth,
+down to* and *Site* under *Motion range*) also searches the curved tracks that the
+diurnal parallax gives objects as close as 0.002 AU, one extra search dimension
+(1/Δ). It needs a plate solution before the search and the observer's site
+(latitude, longitude east positive, height; or SITELAT/SITELONG, OBSGEO-B/L/H in the
+FITS header). The table gets a `Delta[AU]` column and the CSV `inv_dist_au`,
+`inv_dist_err_au` and `dist_au`; a distance is given only where the curvature is
+measured. Positions are then topocentric: give your observatory code with
+`--obscode`. Costs about (number of trial distances) × the time of the stacking.
+
 `tracklets.csv` — predicted position of each passing candidate in every frame
 (time, pixel, RA/Dec). This is what a host application turns into ADES records
 after its own astrometric and photometric calibration.
@@ -249,7 +259,7 @@ fainttrail regress tests/regression [--backend NAME] [--strict]
 ## Roadmap
 
 * CUDA backend: verify and tune on the RTX 5080; then decide on GPU preprocessing
-* curved motion for fast near-Earth objects
+* near-Earth search (curved tracks): a real close approach as a test case
 * more real-data cases (fainter and faster objects), then integration with AstroFind and Siril
 
 ## Kernel features

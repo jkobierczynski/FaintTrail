@@ -85,8 +85,14 @@ void write_candidates_csv(const std::string& path, const SearchResult& res) {
     f << "# t_ref_mjd=" << std::setprecision(8) << res.t_ref_mjd << " t_ref_utc=" << iso_from_mjd(res.t_ref_mjd, 2)
       << " threshold_snr=" << std::setprecision(3) << res.threshold_snr << " method=" << res.threshold_method
       << " velocities=" << res.n_velocities << " dv_pxh=" << res.dv_pxh << " fwhm_px=" << res.fwhm_px << "\n";
+    const bool neo = res.n_distances > 1;
+    if (neo)
+        f << "# near-Earth search: " << res.n_distances << " trial distances, step " << std::setprecision(4) << res.dq_inv_au
+          << " 1/AU; track = (x, y) + v t + inv_dist_au * parallax(t) (see track_points / tracklets);"
+             " dist_au only where the curvature is measured (3 sigma)\n";
     f << "id,ok,flags,x,y,pos_err_px,vx_pxh,vy_pxh,vel_err_pxh,snr,snr_coarse,snr_half1,snr_half2,max_frame_fraction,"
-         "false_alarms_per_run,flux,mag_inst,ra_deg,dec_deg,rate_arcsec_min,pa_deg,mag,mag_err,mag_band\n";
+         "false_alarms_per_run,flux,mag_inst,ra_deg,dec_deg,rate_arcsec_min,pa_deg,mag,mag_err,mag_band"
+      << (neo ? ",inv_dist_au,inv_dist_err_au,dist_au" : "") << "\n";
     for (const auto& c : res.candidates) {
         f << c.id << ',' << (c.ok ? 1 : 0) << ",\"" << c.flags << "\"," << std::setprecision(3) << c.x + 1.0 << ','
           << c.y + 1.0 << ',' << c.pos_err_px << ',' << c.vx_pxh << ',' << c.vy_pxh << ',' << c.vel_err_pxh << ','
@@ -97,9 +103,14 @@ void write_candidates_csv(const std::string& path, const SearchResult& res) {
           << std::setprecision(7) << c.ra_deg << ',' << c.dec_deg << ',' << std::setprecision(4)
           << c.rate_arcsec_min << ',' << std::setprecision(2) << c.pa_deg << ',';
         if (res.mag_band && c.mag < 90.0)
-            f << std::setprecision(2) << c.mag << ',' << c.mag_err << ',' << res.mag_band << '\n';
+            f << std::setprecision(2) << c.mag << ',' << c.mag_err << ',' << res.mag_band;
         else
-            f << ",,\n";
+            f << ",,";
+        if (neo) {
+            f << ',' << std::setprecision(3) << c.inv_dist_au << ',' << c.inv_dist_err_au << ',';
+            if (c.distance_measured()) f << std::setprecision(5) << 1.0 / c.inv_dist_au;
+        }
+        f << '\n';
     }
 }
 
@@ -129,6 +140,8 @@ std::vector<Candidate> read_candidates_csv(const std::string& path) {
         c.dec_deg = t.num(r, "dec_deg");
         c.rate_arcsec_min = t.num(r, "rate_arcsec_min");
         c.pa_deg = t.num(r, "pa_deg");
+        c.inv_dist_au = t.num(r, "inv_dist_au");
+        c.inv_dist_err_au = t.num(r, "inv_dist_err_au");
         out.push_back(c);
     }
     return out;
@@ -199,6 +212,9 @@ std::string summary_text(const SearchResult& res, bool ok_only) {
     for (const auto& c : res.candidates) nok += c.ok;
     s << "velocities searched : " << res.n_velocities << " (grid step " << std::setprecision(2) << res.dv_pxh
       << " px/h)\n";
+    if (res.n_distances > 1)
+        s << "near-Earth distances: " << res.n_distances << " trials, step " << std::setprecision(3) << res.dq_inv_au
+          << " /AU (curved tracks from the diurnal parallax)\n";
     s << "PSF FWHM            : " << res.fwhm_px << " px\n";
     s << "slowest reliable    : " << res.slowest_reliable_pxh << " px/h (2 FWHM over the sequence)\n";
     s << "threshold           : S/N " << res.threshold_snr << " (" << res.threshold_method << ")\n";
@@ -221,6 +237,8 @@ std::string summary_text(const SearchResult& res, bool ok_only) {
         std::snprintf(line, sizeof line, "  %5c", res.mag_band);
         s << line;
     }
+    const bool neo = res.n_distances > 1;
+    if (neo) s << "  Delta[AU]";
     s << "  flags\n";
     for (const auto& c : res.candidates) {
         if (ok_only && !c.ok) continue;
@@ -232,6 +250,11 @@ std::string summary_text(const SearchResult& res, bool ok_only) {
         if (res.mag_band) {
             if (c.mag < 90.0) std::snprintf(line, sizeof line, "  %5.2f", c.mag);
             else std::snprintf(line, sizeof line, "  %5s", "-");
+            s << line;
+        }
+        if (neo) {
+            if (c.distance_measured()) std::snprintf(line, sizeof line, "  %9.4f", 1.0 / c.inv_dist_au);
+            else std::snprintf(line, sizeof line, "  %9s", "far");
             s << line;
         }
         s << "  " << c.flags << '\n';

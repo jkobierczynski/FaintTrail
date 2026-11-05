@@ -20,6 +20,10 @@ struct SimMover {
     double x_ref = 0.0, y_ref = 0.0;  // 0-based position at the reference epoch
     double vx_pxh = 0.0, vy_pxh = 0.0; // motion in pixels per hour
     double mag = 20.0;
+    // Near-Earth object: 1 / geocentric distance in AU (0 = far away). The track
+    // then gets the diurnal parallax seen from the site in SimParams, relative to
+    // the reference epoch, on top of x_ref + v t (v is the geocentric motion).
+    double inv_dist_au = 0.0;
 };
 
 struct SimParams {
@@ -49,6 +53,8 @@ struct SimParams {
     double cosmic_rays_per_frame = 4.0;
     double sky_gradient = 0.03;        // fractional sky change across the field
     std::uint64_t seed = 1;
+    // observer, for movers with inv_dist_au > 0 (longitude east positive)
+    double site_lat_deg = 50.93, site_lon_deg = 5.39, site_height_m = 40.0;
 };
 
 struct SimTruth {

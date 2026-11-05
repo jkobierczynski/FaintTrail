@@ -79,6 +79,13 @@ struct SearchParams {
     //   "check"  check; refuse unregistered frames
     //   "off"    trust the frames as they are
     std::string align = "auto";
+    // Near-Earth objects (parallax.hpp): also search tracks curved by the diurnal
+    // parallax of objects as close as this geocentric distance (AU); 0 = straight
+    // tracks only. Needs set_parallax_model() on the prepared data (plate solution
+    // and observer site). Each extra trial distance multiplies the search time.
+    double neo_min_dist_au = 0.0;
+    // Upper limit on the number of trial distances (the grid is made coarser).
+    int neo_max_trials = 64;
     std::uint64_t seed = 12345;
 };
 
@@ -114,6 +121,11 @@ struct Prepared {
     int static_exclude = 0;             // frames left out on each side by the leave-out median
     DriftCheck registration;            // registration check of the input frames
     AlignmentReport alignment;          // what register_frames() did, if it ran
+    // Diurnal parallax model (parallax.hpp): apparent displacement in pixels of an
+    // object at 1 AU in each frame, with its straight-line part over the sequence
+    // removed. A track at inverse distance q (1/AU) is x + vx t + q par_x. Empty
+    // unless set_parallax_model() was called.
+    std::vector<double> par_x, par_y;
 };
 
 struct Candidate {
@@ -133,6 +145,10 @@ struct Candidate {
     double mag = 99.0, mag_err = 0.0;   // calibrated magnitude in SearchResult::mag_band (photometry.hpp)
     double rate_arcsec_min = 0.0;
     double pa_deg = 0.0;                // position angle of motion, east of north
+    double inv_dist_au = 0.0;           // curved track (near-Earth search): 1 / geocentric distance in AU; 0 = straight
+    double inv_dist_err_au = 0.0;       // its 1-sigma uncertainty (near-Earth search only)
+    // whether the curvature is measured: the distance differs from "far" by 3 sigma
+    bool distance_measured() const { return inv_dist_au > 0.0 && inv_dist_au > 3.0 * inv_dist_err_au; }
     bool ok = false;                    // passed every test
     std::string flags;                  // reasons for rejection, comma separated
 };
@@ -155,7 +171,9 @@ struct SearchResult {
     double null_a = 0.0, null_b = 0.0;
     double null_k = 0.0, null_inv_s2 = 0.0;
     std::vector<double> null_peaks;     // pooled peak S/N of the null runs
-    std::size_t n_velocities = 0;
+    std::size_t n_velocities = 0;       // straight-line motions; times n_distances trials in total
+    std::size_t n_distances = 1;        // trial distances of the near-Earth search (1 = straight tracks only)
+    double dq_inv_au = 0.0;             // their spacing in 1/AU
     double dv_pxh = 0.0;
     double fwhm_px = 0.0;
     double t_ref_mjd = 0.0;
@@ -209,10 +227,17 @@ std::vector<std::pair<double, double>> velocity_grid(const Prepared& prep, const
 // half, 2 = second half. With `snr` true the matched-filtered S/N frames are
 // stacked (result in sigma), otherwise the residuals (mean, data units).
 Image stack_cutout(const Prepared& prep, double x, double y, double vx_pxh, double vy_pxh,
-                   int half_size, bool snr = false, int which = 0);
+                   int half_size, bool snr = false, int which = 0, double inv_dist_au = 0.0);
 
 // Full-frame shift-and-stack of the residuals for a known motion (ephemeris).
 Image stack_full(const Prepared& prep, double vx_pxh, double vy_pxh);
+
+// Position of a candidate in frame `frame` (pixels of the aligned grid): the
+// straight line x + v t, plus the parallax term for near-Earth candidates.
+void candidate_position(const Prepared& prep, const Candidate& c, int frame, double& x, double& y);
+// The same at any time t (hours from the reference epoch); the parallax term is
+// interpolated between frames.
+void candidate_position_at(const Prepared& prep, const Candidate& c, double t_h, double& x, double& y);
 
 // Per-frame positions of a candidate.
 std::vector<TrackPoint> track_points(const Prepared& prep, const Candidate& c);

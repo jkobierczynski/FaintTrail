@@ -500,6 +500,19 @@ Prepared with_times(const Prepared& base, const std::vector<double>& t_h, const 
     q.exptime_s = base.exptime_s;
     q.reg_dx = base.reg_dx;
     q.reg_dy = base.reg_dy;
+    if (!base.par_x.empty()) {
+        // the parallax belongs to the time: frame i of the null run, observed at t_h[i],
+        // gets the displacement of the base frame with that time
+        q.par_x.resize(base.par_x.size());
+        q.par_y.resize(base.par_y.size());
+        for (std::size_t i = 0; i < t_h.size(); ++i) {
+            const auto it = std::find(base.t_h.begin(), base.t_h.end(), t_h[i]);
+            if (it == base.t_h.end()) throw std::runtime_error("null run times are not a permutation of the frame times");
+            const std::size_t k = static_cast<std::size_t>(it - base.t_h.begin());
+            q.par_x[i] = base.par_x[k];
+            q.par_y[i] = base.par_y[k];
+        }
+    }
     SearchParams np = params;
     np.keep_residuals = false;  // the null runs only need the filtered frames
     build_stage(base.sub, q, np, {}, false);

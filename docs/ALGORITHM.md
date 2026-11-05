@@ -60,6 +60,27 @@ into segments of constant coverage. The summation order per pixel is unchanged, 
 the result is bit-identical to the plain definition. A GPU backend would use the
 same layout, with a band in shared memory.
 
+## 2a. Near-Earth search (curved tracks)
+
+Seen from the rotating Earth, an object at geocentric distance Δ is displaced from
+its geocentric direction by the observer's offset from the Earth's centre divided
+by Δ (8.8″ at 1 AU, 15′ at 0.01 AU). As the Earth turns, that displacement changes
+along a curve that depends only on the site, the time and the field. With
+`neo_min_dist_au > 0` (CLI `--neo DIST --site LAT,LON`), FaintTrail computes this
+parallax curve `P(t)` in pixels for an object at 1 AU in the field centre (WGS84
+site, GMST, the plate solution's CD matrix), removes its best straight line, and
+searches
+
+    track_i = x + v t_i + q P(t_i),      q = 1/Δ  in 1/AU
+
+over q = 0, dq, …, 1/Δ_min with dq = 2·grid_tol / max|P| (at most 64 values). Each
+(q, v) pair is one trial motion, stacked through an explicit shift table
+`round(v t_i + q P_i)`; the null runs, the threshold and all tests work on all pairs
+as on velocities. Refinement fits q as well, with an uncertainty from the position
+error and the RMS of P; the distance is reported when q exceeds 3σ, otherwise the
+object is "far". q = 0 is always in the grid, so ordinary objects are found as
+before.
+
 ## 3. Threshold calibration
 
 The search is repeated `null_runs` times with the frame **times randomly permuted**.
@@ -151,8 +172,9 @@ automatically when the untiled search would need more than 60 % of the RAM.
 
 ## 7. Known limitations
 
-* Motion is linear. Fast near-Earth objects observed over long sequences curve;
-  splitting the sequence or adding a curvature term is planned.
+* Motion is linear unless the near-Earth search is on (section 2a). That models
+  the diurnal parallax only, not the curvature of the geocentric orbit, and is
+  meant for objects beyond about 0.002 AU; it does not run tiled.
 * Objects that move less than about two PSF widths during the sequence are partly
   absorbed into the static sky. Longer sequences help.
 * Memory: the untiled search holds about three float copies of the sequence at its

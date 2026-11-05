@@ -102,6 +102,14 @@ search options
   --mpc FILE                MPC 80-column observations of the passing candidates
                             (3 per object: first, middle and last frame time)
   --obscode CODE            MPC observatory code for --mpc (default 500)
+  --neo DIST                near-Earth objects: also search curved tracks of
+                            objects as close as DIST AU (e.g. 0.002), from the
+                            diurnal parallax. Needs a plate solution and the
+                            site; one extra search dimension, untiled only
+  --site LAT,LON[,H]        observer's site for --neo: degrees, longitude east
+                            positive, height in m (default: SITELAT/SITELONG,
+                            OBSGEO-B/L/H or LAT-OBS/LONG-OBS in the header)
+  --neo-trials N            most trial distances for --neo (64)
   --threads N               worker threads (default: all cores)
   --backend NAME            stacking backend: auto (default) or one of
                             'fainttrail backends' 
@@ -245,7 +253,23 @@ SearchParams search_params(const Args& a, const std::vector<Wcs>& wcs) {
     if (a.flag("--allow-unregistered")) p.align = "off";
     if (p.null_model != "gauss" && p.null_model != "linear") throw std::runtime_error("--null-model must be gauss or linear");
     p.seed = static_cast<std::uint64_t>(a.num("--seed", static_cast<double>(p.seed)));
+    p.neo_min_dist_au = a.num("--neo", 0.0);
+    p.neo_max_trials = a.integer("--neo-trials", p.neo_max_trials);
+    if (p.neo_min_dist_au < 0.0) throw std::runtime_error("--neo must be a distance in AU");
+    if (p.neo_min_dist_au > 0.0 && p.neo_max_trials < 2) throw std::runtime_error("--neo-trials must be at least 2");
     return p;
+}
+
+// The observer's site for the near-Earth search: --site, else the FITS header.
+ObserverSite cli_site(const Args& a, const std::string& file) {
+    if (a.flag("--site")) return parse_site(a.str("--site"));
+    ObserverSite s;
+    try {
+        if (site_from_header(fits_layout(file).header, s)) return s;
+    } catch (const std::exception&) {
+    }
+    throw std::runtime_error("--neo needs the observer's site: give --site LAT,LON[,HEIGHT_M] (degrees, longitude east "
+                             "positive); the FITS header has no SITELAT/SITELONG or OBSGEO keywords");
 }
 
 std::vector<Frame> load_inputs(const Args& a) {
@@ -430,6 +454,11 @@ int cmd_search(const Args& a) {
     const double budget = a.flag("--max-memory") ? a.num("--max-memory", 0.0) : (physical > 0 ? 0.6 * physical : 4096.0);
     const double untiled = estimate_untiled_memory_mb(src->width(), src->height(), src->count());
     bool tiled = !a.flag("--no-tile") && (a.flag("--tile") || untiled > budget);
+    if (tiled && p.neo_min_dist_au > 0.0) {
+        if (a.flag("--tile")) throw std::runtime_error("--neo: the near-Earth search cannot run tiled; leave out --tile");
+        std::fprintf(stderr, "the near-Earth search runs untiled (about %.0f MB)\n", untiled);
+        tiled = false;
+    }
     if (tiled && p.align != "off") {
         // a tiled search reads the frames a tile at a time and cannot align them:
         // check the first, middle and last frame first
@@ -493,6 +522,21 @@ int cmd_search(const Args& a) {
             std::fprintf(stderr, "\nplate solving the stacked sky with ASTAP...\n");
             report_solve(solve_prepared(meta, cli_hints(a, files[0], meta.height), cli_solve_options(a)));
         }
+        if (p.neo_min_dist_au > 0.0) {
+            if (!meta.wcs.valid)
+                throw std::runtime_error("--neo needs a plate solution (in the frames, --wcs-from, or --solve)");
+            const ObserverSite site = cli_site(a, files[0]);
+            set_parallax_model(meta, site);
+            double dq = 0.0;
+            const auto qs = inverse_distance_grid(meta, p, &dq);
+            std::fprintf(stderr,
+                         "near-Earth search: site %.4f %+.4f, %.0f m; parallax curvature %.3f px at 1 AU, %zu trial "
+                         "distances down to %.4f AU\n",
+                         site.lat_deg, site.lon_deg, site.height_m, parallax_amplitude_px(meta), qs.size(),
+                         p.neo_min_dist_au);
+            if (qs.size() == 1)
+                std::fprintf(stderr, "  (the curvature stays below the grid tolerance: straight tracks are enough)\n");
+        }
         if (meta.alignment.applied) std::fprintf(stderr, "registered: %s\n", meta.alignment.summary().c_str());
         if (p.align != "off" && !meta.registration.measured && !meta.alignment.applied)
             std::fprintf(stderr, "note: too few stars (%d) to check the registration; the frames are assumed registered\n",
@@ -530,6 +574,8 @@ int cmd_search(const Args& a) {
     if (a.flag("--mpc")) {
         if (!res.has_sky) throw std::runtime_error("--mpc needs a plate solution (in the frames, --wcs-from, or ASTAP)");
         const auto lines = mpc_observations(meta, res, a.str("--obscode", "500"), 3, a.flag("--all"));
+        if (p.neo_min_dist_au > 0.0 && !a.flag("--obscode"))
+            std::fprintf(stderr, "note: near-Earth positions are topocentric; give your observatory code with --obscode\n");
         std::ofstream mf(a.str("--mpc"));
         if (!mf) throw std::runtime_error("cannot write " + a.str("--mpc"));
         for (const auto& l : lines) mf << l << '\n';

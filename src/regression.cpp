@@ -322,9 +322,10 @@ RegressionOutcome run_regression_case(const RegressionCase& c, const RegressionO
                 add(false, true, o.name + ": sky position given but the frames have no WCS");
             } else {
                 // compare at the object's epoch
-                double ra = 0, dec = 0;
+                double ra = 0, dec = 0, x = 0, y = 0;
                 const double dth = (o.mjd - r.t_ref_mjd) * 24.0;
-                prep.wcs.pix2sky(cd.x + cd.vx_pxh * dth, cd.y + cd.vy_pxh * dth, ra, dec);
+                candidate_position_at(prep, cd, dth, x, y);
+                prep.wcs.pix2sky(x, y, ra, dec);
                 const double s = sep_arcsec(ra, dec, o.ra, o.dec);
                 add(s <= o.sky_tol_arcsec, true,
                     fmt("%s: sky position off by %.1f\" (limit %.1f\")", o.name.c_str(), s, o.sky_tol_arcsec));
